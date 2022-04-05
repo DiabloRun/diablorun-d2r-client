@@ -21,8 +21,9 @@ let watcher: FSWatcher;
 const createWindow = (): void => {
   // Create the browser window.
   mainWindow = new BrowserWindow({
-    height: 900,
-    width: 1600,
+    width: 800,
+    height: 600,
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: true,
       preload: path.join(__dirname, "..", "preload", "index.js"),
@@ -33,8 +34,9 @@ const createWindow = (): void => {
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
   // Open the DevTools.
-  mainWindow.webContents.openDevTools();
+  // mainWindow.webContents.openDevTools();
 
+  // Set up watcher when window is ready
   mainWindow.webContents.on("dom-ready", async () => {
     const allSettings = await settings.get();
 
@@ -104,4 +106,8 @@ ipcMain.on("message", async (_event, message) => {
       settings: await settings.get(),
     });
   }
+});
+
+ipcMain.on("files", (files) => {
+  console.log("FILES", files);
 });
