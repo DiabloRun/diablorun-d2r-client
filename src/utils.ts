@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as d2s from "@dschu012/d2s";
+import settings from "electron-settings";
 import constants from "./constants";
 import { Payload } from "./payload";
 import { mainWindow } from "./index";
@@ -166,39 +167,45 @@ export function getCompletedQuestsPayload(
   };
 }
 
-export async function getPayload(filePath: string, apiKey: string) {
+export async function getPayload(filePath: string) {
   const buffer = fs.readFileSync(filePath);
   const data = await d2s.read(buffer, constants);
 
   mainWindow.webContents.send("message", { log: data });
 
-  return d2sDataToPayload(data, apiKey);
+  return await d2sDataToPayload(data);
 }
 
-function d2sDataToPayload(
-  {
-    attributes,
-    corpse_items,
-    header,
-    item_bonuses,
-    items,
-    merc_items,
-    skills,
-  }: d2s.types.ID2S,
-  apiKey: string
-): Payload {
+export async function getPayloadHeader() {
+  const { apiKey, raceId } = await settings.get();
+
   return {
-    Event: "DataRead",
     Headers: `API_KEY=${apiKey}`,
     DIApplicationInfo: {
       Version: "21.6.16",
     },
     D2ProcessInfo: {
       Type: "D2R",
-      Version: `${header.version}`,
-      CommandLineArgs: [],
+      Version: `d2s`,
+      CommandLineArgs: raceId ? [`-race${raceId}`] : [],
     },
+  };
+}
 
+async function d2sDataToPayload({
+  attributes,
+  corpse_items,
+  header,
+  item_bonuses,
+  items,
+  merc_items,
+  skills,
+}: d2s.types.ID2S): Promise<Payload> {
+  const payloadHeader = await getPayloadHeader();
+
+  return {
+    ...payloadHeader,
+    Event: "DataRead",
     Seed: 0,
     SeedIsArg: false,
     IsExpansion: header.status.expansion,

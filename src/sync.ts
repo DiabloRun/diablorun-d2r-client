@@ -1,7 +1,9 @@
 import * as chokidar from "chokidar";
-import { getPayload } from "./utils";
+import { getPayload, getPayloadHeader } from "./utils";
 import fetch from "electron-fetch";
 import settings from "electron-settings";
+
+const apiUrl = "https://api.diablo.run/sync";
 
 export function syncSaveFileDir(savesDir: string) {
   console.log("Watching", savesDir);
@@ -18,10 +20,9 @@ async function syncSaveFile(file: string) {
   console.log("Sync", file);
 
   try {
-    const { apiKey } = await settings.get();
-    const payload = await getPayload(file, apiKey as string);
+    const payload = await getPayload(file);
 
-    await fetch("https://api.diablo.run/sync", {
+    await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -29,7 +30,29 @@ async function syncSaveFile(file: string) {
       body: JSON.stringify(payload),
     });
   } catch (err) {
-    console.log("Sync failed");
+    console.log("Sync failed: ", file);
+    console.log(err);
+  }
+}
+
+export async function syncProcess() {
+  console.log("Sync process");
+
+  try {
+    const payloadHeader = await getPayloadHeader();
+
+    await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...payloadHeader,
+        Event: "ProcessFound",
+      }),
+    });
+  } catch (err) {
+    console.log("Sync process failed");
     console.log(err);
   }
 }
