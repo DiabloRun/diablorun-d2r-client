@@ -16,7 +16,7 @@ export function getItemQuality(qualityId: number) {
     default:
       return "white";
     case 1:
-      return "socketed";
+      return "none";
     case 4:
       return "blue";
     case 5:
@@ -32,6 +32,7 @@ export function getItemQuality(qualityId: number) {
 
 export function getItemName(item: d2s.types.IItem) {
   let name = item.type_name;
+
   if (item.magic_prefix_name) {
     name = `${item.magic_prefix_name} ${name}`;
   }
