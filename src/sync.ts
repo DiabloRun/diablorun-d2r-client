@@ -1,5 +1,5 @@
 import * as chokidar from "chokidar";
-import { getPayload, getPayloadHeader } from "./DI";
+import { getPayload, getPayloadHeader, Payload } from "./DI";
 import fetch from "electron-fetch";
 import { ipcMain } from "electron";
 
@@ -15,7 +15,22 @@ export function syncSaveFileDir(savesDir: string) {
     files.push(file);
     ipcMain.emit("files", [...files]);
 
-    await syncSaveFile(file);
+    try {
+      const payload = await getPayload(file);
+      await postJSON(payload);
+    } catch (err) {
+      console.log("Sync failed", file, err);
+
+      const header = await getPayloadHeader("DataRead");
+
+      await postJSON({
+        ...header,
+        Seed: 0,
+        SeedIsArg: false,
+        Name: file.match(/(\w+)\.d2s$/)[1],
+        Guid: "",
+      } as Payload);
+    }
   });
 
   watcher.on("unlink", async (file) => {
@@ -28,7 +43,10 @@ export function syncSaveFileDir(savesDir: string) {
     ipcMain.emit("files", [...files]);
   });
 
-  watcher.on("change", async (file) => await syncSaveFile(file));
+  watcher.on("change", async (file) => {
+    const payload = await getPayload(file);
+    await postJSON(payload);
+  });
 
   return watcher;
 }
@@ -41,18 +59,6 @@ async function postJSON(body: any) {
     },
     body: JSON.stringify(body),
   });
-}
-
-async function syncSaveFile(file: string) {
-  console.log("Sync", file);
-
-  try {
-    const payload = await getPayload(file);
-    await postJSON(payload);
-  } catch (err) {
-    console.log("Sync failed: ", file);
-    console.log(err);
-  }
 }
 
 export async function syncProcess() {
