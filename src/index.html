@@ -7,6 +7,7 @@
   <body>
     <h1>diablo.run D2R client</h1>
     <form name="settings">
+      <h2>diablo.run settings</h2>
       <p>
         <label>API Key</label><br />
         <input type="password" id="apiKey" />
@@ -19,6 +20,24 @@
       <p>
         <label>Race ID</label><br />
         <input type="number" id="raceId" />
+      </p>
+      <h2>LiveSplit settings</h2>
+      <p>
+        <label>
+          <input type="checkbox" id="liveSplitEnabled" />
+          Enable LiveSplit client
+        </label>
+      </p>
+      <p>
+        <label>LiveSplit server</label><br />
+        <input id="liveSplitServer" /><br />
+        <span id="liveSplitStatus"></span>
+      </p>
+      <p>
+        <label>D2R capture</label><br />
+        <video style="display: none"></video>
+        <canvas></canvas><br />
+        <span id="isLoading"></span>
       </p>
     </form>
   </body>

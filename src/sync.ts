@@ -1,19 +1,38 @@
 import * as chokidar from "chokidar";
 import { getPayload, getPayloadHeader, Payload } from "./DI";
 import fetch from "electron-fetch";
-import { ipcMain } from "electron";
+import { getLiveSplitClient } from "./livesplit";
+import { ipcSend } from "./ipc";
 
 const apiUrl = "https://api.diablo.run/sync";
 
 export function syncSaveFileDir(savesDir: string) {
   console.log("Watching", savesDir);
 
-  const files: string[] = [];
   const watcher = chokidar.watch(`${savesDir}/*.d2s`, { persistent: true });
+  let ready = false;
+
+  watcher.on("ready", () => {
+    ready = true;
+  });
 
   watcher.on("add", async (file) => {
-    files.push(file);
-    ipcMain.emit("files", [...files]);
+    // Start timer if new character created
+    if (ready) {
+      try {
+        const client = await getLiveSplitClient();
+
+        client.reset();
+        client.pauseGameTime();
+        client.startTimer();
+
+        setTimeout(() => {
+          ipcSend({ forceUnpauseGameTime: 1 });
+        }, 500);
+      } catch (err) {
+        console.log(err);
+      }
+    }
 
     try {
       const payload = await getPayload(file);
@@ -33,17 +52,10 @@ export function syncSaveFileDir(savesDir: string) {
     }
   });
 
-  watcher.on("unlink", async (file) => {
-    const index = files.indexOf(file);
-
-    if (index !== -1) {
-      files.splice(index, 1);
-    }
-
-    ipcMain.emit("files", [...files]);
-  });
+  watcher.on("unlink", async (file) => {});
 
   watcher.on("change", async (file) => {
+    console.log("change", file);
     const payload = await getPayload(file);
     await postJSON(payload);
   });
@@ -62,8 +74,6 @@ async function postJSON(body: any) {
 }
 
 export async function syncProcess() {
-  console.log("Sync process");
-
   try {
     const payloadHeader = await getPayloadHeader("ProcessFound");
     await postJSON(payloadHeader);
