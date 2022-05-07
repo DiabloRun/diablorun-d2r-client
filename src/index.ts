@@ -24,8 +24,8 @@ let watcher: FSWatcher;
 const createWindow = async () => {
   // Create the browser window.
   mainWindow = new BrowserWindow({
-    width: 1600,
-    height: 900,
+    width: 800,
+    height: 800,
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -37,7 +37,7 @@ const createWindow = async () => {
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
   // Open the DevTools.
-  mainWindow.webContents.openDevTools();
+  //mainWindow.webContents.openDevTools();
 
   // Set up watcher when window is ready
   mainWindow.webContents.on("dom-ready", async () => {

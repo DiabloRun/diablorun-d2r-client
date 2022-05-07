@@ -24,19 +24,32 @@ export async function getPayloadHeader(event: "ProcessFound" | "DataRead") {
   };
 }
 
-async function d2sDataToPayload({
-  attributes,
-  corpse_items,
-  header,
-  item_bonuses,
-  items,
-  merc_items,
-  skills,
-}: d2s.types.ID2S): Promise<Payload> {
+async function d2sDataToPayload(
+  filePath: string,
+  {
+    attributes,
+    corpse_items,
+    header,
+    item_bonuses,
+    items,
+    merc_items,
+    skills,
+  }: d2s.types.ID2S
+): Promise<Payload> {
   const payloadHeader = await getPayloadHeader("DataRead");
   const statsPayload = getStatsPayload(attributes);
   const itemsPayload = getItemsPayload(items);
   const questsPayload = getQuestsPayload(header);
+
+  // Get character name from file name if d2s reader fails to get name
+  // (temporary fix for version 98 d2s)
+  if (!header.name) {
+    const match = filePath.match(/([\w-]+)\.d2s$/);
+
+    if (match) {
+      header.name = match[1];
+    }
+  }
 
   return {
     ...payloadHeader,
@@ -90,5 +103,5 @@ export async function getPayload(filePath: string) {
   const buffer = fs.readFileSync(filePath);
   const data = await d2s.read(buffer, constants);
 
-  return await d2sDataToPayload(data);
+  return await d2sDataToPayload(filePath, data);
 }
