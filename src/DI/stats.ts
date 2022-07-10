@@ -1,4 +1,4 @@
-import * as d2s from "@dschu012/d2s";
+import * as d2s from "../lib/d2s";
 import { Payload } from "./types";
 
 export function getStatsPayload(
