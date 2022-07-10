@@ -27,7 +27,10 @@
         {
           "name": "@electron-forge/maker-squirrel",
           "config": {
-            "name": "diablorun_d2r_client"
+            "name": "DiabloRun",
+            "iconUrl": "C:/Users/Gutnar/Documents/GitHub/diablorun-d2r-client/assets/icons/win/icon.ico",
+            "setupIcon": "C:/Users/Gutnar/Documents/GitHub/diablorun-d2r-client/assets/icons/win/icon.ico",
+            "skipUpdateIcon": true
           }
         }
       ],
