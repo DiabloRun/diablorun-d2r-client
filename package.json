@@ -1,6 +1,6 @@
 {
   "name": "diablorun-d2r-client",
-  "productName": "diablorun-d2r-client",
+  "productName": "Diablo.run",
   "version": "1.0.0",
   "description": "Diablo.run D2R client",
   "main": ".webpack/main",
@@ -9,37 +9,26 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
-    "lint": "eslint --ext .ts,.tsx ."
+    "lint": "eslint --ext .ts,.tsx .",
+    "make-icon": "electron-icon-maker --input=assets/diablo-run-icon.png --output=assets"
   },
   "keywords": [],
   "author": {
-    "name": "Gutnar Leede",
-    "email": "gutnar@gmail.com"
+    "name": "Leede OÜ",
+    "email": "info@leede.ee"
   },
   "license": "MIT",
   "config": {
     "forge": {
-      "packagerConfig": {},
+      "packagerConfig": {
+        "icon": "./assets/icons/win/icon.ico"
+      },
       "makers": [
         {
           "name": "@electron-forge/maker-squirrel",
           "config": {
             "name": "diablorun_d2r_client"
           }
-        },
-        {
-          "name": "@electron-forge/maker-zip",
-          "platforms": [
-            "darwin"
-          ]
-        },
-        {
-          "name": "@electron-forge/maker-deb",
-          "config": {}
-        },
-        {
-          "name": "@electron-forge/maker-rpm",
-          "config": {}
         }
       ],
       "plugins": [
@@ -75,6 +64,7 @@
     "@vercel/webpack-asset-relocator-loader": "^1.7.0",
     "css-loader": "^6.7.1",
     "electron": "18.0.1",
+    "electron-icon-maker": "^0.0.5",
     "eslint": "^8.12.0",
     "eslint-plugin-import": "^2.25.4",
     "fork-ts-checker-webpack-plugin": "^6.5.0",
