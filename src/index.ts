@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import * as path from "path";
 import { syncProcess, syncSaveFileDir } from "./sync";
 import { FSWatcher } from "chokidar";
@@ -24,8 +24,8 @@ let watcher: FSWatcher;
 const createWindow = async () => {
   // Create the browser window.
   mainWindow = new BrowserWindow({
-    width: 800,
-    height: 800,
+    width: 400,
+    height: 500,
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -59,6 +59,12 @@ const createWindow = async () => {
         captureSourceId: await getCaptureSourceId(),
       });
     }
+  });
+
+  // Let links be handled by system default browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
   });
 };
 
