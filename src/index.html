@@ -5,34 +5,40 @@
     <title>Diablo.run</title>
   </head>
   <body>
-    <h1>Diablo.run D2R client</h1>
     <form name="settings">
-      <h2>Diablo.run settings</h2>
+      <h2>Settings</h2>
       <p>
-        <label>API Key</label><br />
-        <input type="password" id="apiKey" />
+        Get your API key from
+        <a href="https://diablo.run/setup#/" target="_blank">Diablo.run</a>
+      </p>
+      <p class="field">
+        <label>API_KEY=</label>
+        <input type="password" id="apiKey" placeholder="paste your key here" />
       </p>
       <p>
-        <label>Save files directory</label><br />
-        <button id="selectSavesDirButton">Browse saves directory</button><br />
+        <label>Saved Games (D2R) Directory</label><br />
+        <button id="selectSavesDirButton">Browse for directory</button><br />
         <span id="savesDir"></span>
       </p>
-      <p>
+      <!--
+        <p>
         <label>Race ID</label><br />
         <input type="number" id="raceId" />
       </p>
-      <h2>LiveSplit settings</h2>
+      -->
+
+      <h2>LiveSplit</h2>
       <p>
         <label>
           <input type="checkbox" id="liveSplitEnabled" />
           Enable LiveSplit client
         </label>
       </p>
-      <p>
-        <label>LiveSplit server</label><br />
-        <input id="liveSplitServer" /><br />
-        <span id="liveSplitStatus"></span>
+      <p class="field">
+        <label>LiveSplit server</label>
+        <input id="liveSplitServer" />
       </p>
+      <span id="liveSplitStatus"></span>
       <p>
         <label>D2R capture</label><br />
         <video style="display: none"></video>
