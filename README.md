@@ -31,6 +31,7 @@ This tool communicates with LiveSplit server component and tracks load states.
 
 ### Twitch extension to display character gear
 * [Install Diablo.run Armory for D2R](https://dashboard.twitch.tv/extensions/n1xuo058lazw6dskgsp37y6zw4xuus-0.0.7) Twitch extension
+* Set the extension as an overlay
 * Get your API key from [diablo.run/setup](https://diablo.run/setup)
 * Add your API key to the Diablo.run client
 * Browse for your saved games directory for D2R saves folder. Usually in C:\Users\Saved Games\Diablo II Resurrected
