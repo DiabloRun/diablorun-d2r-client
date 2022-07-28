@@ -1,9 +1,15 @@
-## Download LiveSplit and Server Component
+## Diablo.run client
+Tool is used to track Diblo II: Resurrected loading states with [LiveSplit](http://livesplit.org/) and [LiveSplit Server Component](https://github.com/LiveSplit/LiveSplit.Server/releases/download/1.8.19/LiveSplit.Server.zip). It captures D2R client and tracks loading screens.
+
+Diablo.run client aslo gives the ability to share your character data after setting up the API key. If you have [Diablo.run armory extension](https://dashboard.twitch.tv/extensions/n1xuo058lazw6dskgsp37y6zw4xuus-0.0.7) installed then the data will be broadcasted there as well automatically.
+
+## Installation and required tools
+### Download LiveSplit and Server Component
 * [Download LiveSplit](http://livesplit.org/) 
 * Download [Server Component](https://github.com/LiveSplit/LiveSplit.Server/releases/download/1.8.19/LiveSplit.Server.zip)
 * Copy LiveSplit.Server.dll and Noesis.Javascript.dll to your LiveSplit/Components folder
 
-## Setup LiveSplit
+### Setup LiveSplit
 * Open LiveSplit and enter edit layout window
 * Add > Control > LiveSplit Server
 * Double click on LiveSplit server and make note of the IP and port
@@ -11,7 +17,7 @@
 * Right click LiveSplit window and click Control > Start server
 * Note that you need to Start server every time you open LiveSplit
 
-## Download the diablo.run client
+### Download the diablo.run client
 This tool communicates with LiveSplit server component and tracks load states.
 
 * [Download latest release](https://github.com/DiabloRun/diablorun-d2r-client/releases)
@@ -23,7 +29,7 @@ This tool communicates with LiveSplit server component and tracks load states.
 * Open D2R and test if it's working
 * If everything worked correctly then you should see the Diablo.run client swap between "playing" and "loading"
 
-## Twitch extension to display character gear
+### Twitch extension to display character gear
 * [Install Diablo.run Armory for D2R](https://dashboard.twitch.tv/extensions/n1xuo058lazw6dskgsp37y6zw4xuus-0.0.7) Twitch extension
 * Get your API key from [diablo.run/setup](https://diablo.run/setup)
 * Add your API key to the Diablo.run client
