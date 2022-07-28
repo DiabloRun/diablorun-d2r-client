@@ -46,10 +46,12 @@ apiKeyInput.addEventListener("input", () => {
   windowApi.send({ settings: state.settings });
 });
 
+/*
 raceIdInput.addEventListener("input", () => {
   state.settings.raceId = raceIdInput.value;
   windowApi.send({ settings: state.settings });
 });
+*/
 
 savesDirButton.addEventListener("click", () => {
   windowApi.send({ selectSavesDirButton: true });
@@ -75,7 +77,7 @@ function setSettings(settings: Settings) {
   state.settings = settings;
 
   apiKeyInput.value = settings.apiKey;
-  raceIdInput.value = settings.raceId;
+  // raceIdInput.value = settings.raceId;
   savesDirSpan.textContent = settings.savesDir;
   liveSplitEnabledCheckbox.checked = settings.liveSplitEnabled;
   liveSplitServerInput.value = settings.liveSplitServer;

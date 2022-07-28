@@ -116,7 +116,8 @@ ipcMain.on("message", async (_event, message) => {
         watcher.removeAllListeners();
       }
 
-      //await settings.set("savesDir", value.filePaths[0]);
+      // Saved games directory
+      await overwriteSettings({ savesDir: value.filePaths[0] });
 
       // Set up new watcher
       watcher = syncSaveFileDir(value.filePaths[0]);
