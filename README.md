@@ -1,7 +1,7 @@
 ## Diablo.run client
 Tool is used to track Diblo II: Resurrected loading states with [LiveSplit](http://livesplit.org/) and [LiveSplit Server Component](https://github.com/LiveSplit/LiveSplit.Server/releases/download/1.8.19/LiveSplit.Server.zip). It captures D2R client and tracks loading screens.
 
-Diablo.run client aslo gives the ability to share your character data after setting up the API key. If you have [Diablo.run armory extension](https://dashboard.twitch.tv/extensions/n1xuo058lazw6dskgsp37y6zw4xuus-0.0.7) installed then the data will be broadcasted there as well automatically.
+Diablo.run client also gives the ability to share your character data after setting up the API key. If you have [Diablo.run armory extension](https://dashboard.twitch.tv/extensions/n1xuo058lazw6dskgsp37y6zw4xuus-0.0.7) installed then the data will be broadcasted there as well automatically.
 
 ## Installation and required tools
 ### Download LiveSplit and Server Component
