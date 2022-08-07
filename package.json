@@ -1,7 +1,7 @@
 {
   "name": "diablorun-d2r-client",
   "productName": "Diablo.run",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Diablo.run D2R client",
   "main": ".webpack/main",
   "scripts": {
@@ -30,7 +30,7 @@
           "config": {
             "name": "DiabloRun",
             "iconUrl": "C:/Projects/diablorun-d2r-client/assets/icons/win/icon.ico",
-            "setupIcon": "C:/Projects/diablorun-d2r-client/diablorun-d2r-client/assets/icons/win/icon.ico",
+            "setupIcon": "C:/Projects/diablorun-d2r-client/assets/icons/win/icon.ico",
             "skipUpdateIcon": true
           }
         }
