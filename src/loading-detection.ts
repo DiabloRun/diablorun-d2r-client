@@ -59,12 +59,6 @@ function detectCenterLoading(
   const cm = getMargin(ctx, width, height, x, y, verticalOffset);
   const innerHeight = height - verticalOffset;
 
-  console.log(
-    cm.t / innerHeight,
-    cm.b / innerHeight,
-    (width - cm.l - cm.r) / innerHeight
-  );
-
   return (
     equalWithin(cm.t / innerHeight, 0.3, 0.075) &&
     equalWithin(cm.b / innerHeight, 0.3, 0.075) &&
