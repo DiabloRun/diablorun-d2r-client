@@ -25,7 +25,7 @@ const createWindow = async () => {
   // Create the browser window.
   mainWindow = new BrowserWindow({
     width: 400,
-    height: 500,
+    height: 550,
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
