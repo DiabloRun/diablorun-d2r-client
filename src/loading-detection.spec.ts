@@ -54,7 +54,7 @@ describe("Loading detection", () => {
   });
 
   it("should be legacy loading with 1280x720", async () => {
-    await expectLoading("test/1280x720-legacy.png", false);
+    await expectLoading("test/1280x720-legacy.png");
   });
 
   it("should not be loading with 1280x720", async () => {
