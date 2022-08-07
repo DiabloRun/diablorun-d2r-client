@@ -1,5 +1,5 @@
 import "./index.css";
-import { detectLoading } from "./loading-detection";
+import { detectLoading, MIN_IMAGE_SIZE } from "./loading-detection";
 import { Settings } from "./types";
 
 const windowApi = (window as any).api;
@@ -122,11 +122,9 @@ async function startCapture(sourceId: string) {
       mandatory: {
         chromeMediaSource: "desktop",
         chromeMediaSourceId: sourceId,
-        //minWidth: 50,
-        maxWidth: 80,
-        //minHeight: 50,
-        maxHeight: 80,
-        maxFrameRate: 15,
+        maxWidth: MIN_IMAGE_SIZE,
+        maxHeight: MIN_IMAGE_SIZE,
+        maxFrameRate: 30,
       },
     },
   });

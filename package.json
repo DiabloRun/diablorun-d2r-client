@@ -10,7 +10,8 @@
     "make": "electron-forge make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
-    "make-icon": "electron-icon-maker --input=assets/diablo-run-icon.png --output=assets"
+    "make-icon": "electron-icon-maker --input=assets/diablo-run-icon.png --output=assets",
+    "test": "ts-mocha src/**/*.spec.ts"
   },
   "keywords": [],
   "author": {
@@ -62,6 +63,8 @@
     "@electron-forge/maker-squirrel": "^6.0.0-beta.63",
     "@electron-forge/maker-zip": "^6.0.0-beta.63",
     "@electron-forge/plugin-webpack": "^6.0.0-beta.63",
+    "@types/expect": "^24.3.0",
+    "@types/mocha": "^9.1.1",
     "@typescript-eslint/eslint-plugin": "^5.17.0",
     "@typescript-eslint/parser": "^5.17.0",
     "@vercel/webpack-asset-relocator-loader": "^1.7.0",
@@ -71,9 +74,12 @@
     "eslint": "^8.12.0",
     "eslint-plugin-import": "^2.25.4",
     "fork-ts-checker-webpack-plugin": "^6.5.0",
+    "mocha": "^10.0.0",
     "node-loader": "^2.0.0",
+    "sharp": "^0.30.7",
     "style-loader": "^3.3.1",
     "ts-loader": "^9.2.8",
+    "ts-mocha": "^10.0.0",
     "typescript": "~4.5.4"
   },
   "dependencies": {

@@ -1,3 +1,5 @@
+export const MIN_IMAGE_SIZE = 160;
+
 export function detectLoading(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -58,9 +60,9 @@ function detectCenterLoading(
   const innerHeight = height - verticalOffset;
 
   return (
-    equalWithin(cm.t / innerHeight, 0.3, 0.05) &&
-    equalWithin(cm.b / innerHeight, 0.3, 0.05) &&
-    equalWithin((width - cm.l - cm.r) / innerHeight, 0.7375, 0.05)
+    equalWithin(cm.t / innerHeight, 0.3, 0.1) &&
+    equalWithin(cm.b / innerHeight, 0.3, 0.1) &&
+    equalWithin((width - cm.l - cm.r) / innerHeight, 0.7375, 0.1)
   );
 }
 
