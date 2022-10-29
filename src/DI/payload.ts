@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import * as d2s from "../lib/d2s";
+import * as d2s from "@dschu012/d2s";
 import settings from "electron-settings";
 import constants from "./constants";
 import { getItemsPayload } from "./items";
