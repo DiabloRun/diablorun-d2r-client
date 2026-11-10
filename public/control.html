@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>D2R Timer</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/control.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>D2R Timer</h1>
+          <p class="subtitle">Diablo II: Resurrected &middot; Linux</p>
+        </div>
+        <span id="connection" class="badge">connecting&hellip;</span>
+      </header>
+
+      <section class="card timers-card">
+        <div class="timer-row">
+          <span class="label">RTA</span>
+          <span id="rta" class="time">0:00.00</span>
+        </div>
+        <div class="timer-row igt">
+          <span class="label">IGT</span>
+          <span id="igt" class="time">0:00.00</span>
+        </div>
+        <div class="actions">
+          <button id="startStop" class="primary">Start</button>
+          <button id="pauseResume">Pause</button>
+          <button id="reset">Reset</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <div class="status-grid">
+          <div><span>Timer</span><strong id="timerStatus">idle</strong></div>
+          <div><span>Loading</span><strong id="loadingStatus">no</strong></div>
+          <div><span>Capture</span><strong id="captureStatus">searching</strong></div>
+          <div><span>Window</span><strong id="windowInfo">&mdash;</strong></div>
+          <div><span>Resolution</span><strong id="resolution">&mdash;</strong></div>
+          <div><span>Frame rate</span><strong id="frameRate">&mdash;</strong></div>
+        </div>
+        <p id="errorBox" class="error" hidden></p>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Detector preview</h2>
+          <label class="toggle">
+            <input type="checkbox" id="previewToggle" checked />
+            live
+          </label>
+        </div>
+        <canvas id="preview" width="160" height="90"></canvas>
+        <p class="hint" id="previewHint">Waiting for the D2R window&hellip;</p>
+      </section>
+
+      <section class="card">
+        <h2>OBS browser source</h2>
+        <p class="url-row">
+          <code id="overlayUrl">/overlay</code>
+          <button id="copyOverlay">Copy</button>
+        </p>
+        <p class="hint">
+          Add a Browser source with the URL above. Recommended size
+          <strong>360 &times; 160</strong>. Optional URL parameters:
+          <code>?scale=1.25</code>, <code>?decimals=3</code>,
+          <code>?status=1</code>.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Hotkeys</h2>
+        <p class="hint">
+          Bind these commands to GNOME custom shortcuts: Settings &rarr;
+          Keyboard &rarr; View and Customize Shortcuts &rarr; Custom Shortcuts.
+        </p>
+        <pre id="hotkeyCommands"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Config</h2>
+        <p class="hint">
+          Config file: <code id="configPath">&mdash;</code><br />
+          Restart the app after changing the config file.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="/control.js"></script>
+  </body>
+</html>

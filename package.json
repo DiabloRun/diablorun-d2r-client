@@ -1,94 +1,40 @@
 {
   "name": "diablorun-d2r-client",
-  "productName": "Diablo.run",
-  "version": "1.0.2",
-  "description": "Diablo.run D2R client",
-  "main": ".webpack/main",
+  "version": "2.0.0",
+  "description": "Local Linux web timer for Diablo II: Resurrected with loading-based IGT",
+  "private": true,
+  "main": "dist/index.js",
   "scripts": {
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "publish": "electron-forge publish",
-    "lint": "eslint --ext .ts,.tsx .",
-    "make-icon": "electron-icon-maker --input=assets/diablo-run-icon.png --output=assets",
-    "test": "ts-mocha src/**/*.spec.ts"
+    "dev": "tsx watch src/index.ts",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/*.spec.ts"
   },
-  "keywords": [],
+  "keywords": [
+    "diablo",
+    "d2r",
+    "speedrun",
+    "timer",
+    "obs"
+  ],
   "author": {
     "name": "Leede OÜ",
     "email": "info@leede.ee"
   },
   "license": "MIT",
-  "config": {
-    "forge": {
-      "packagerConfig": {
-        "icon": "./assets/icons/win/icon.ico"
-      },
-      "makers": [
-        {
-          "name": "@electron-forge/maker-squirrel",
-          "config": {
-            "name": "DiabloRun",
-            "iconUrl": "C:/Projects/diablorun-d2r-client/assets/icons/win/icon.ico",
-            "setupIcon": "C:/Projects/diablorun-d2r-client/assets/icons/win/icon.ico",
-            "skipUpdateIcon": true
-          }
-        }
-      ],
-      "plugins": [
-        [
-          "@electron-forge/plugin-webpack",
-          {
-            "devContentSecurityPolicy": "default-src * self blob: data: gap:; style-src * self 'unsafe-inline' blob: data: gap:; script-src * 'self' 'unsafe-eval' 'unsafe-inline' blob: data: gap:; object-src * 'self' blob: data: gap:; img-src * self 'unsafe-inline' blob: data: gap:; connect-src self * 'unsafe-inline' blob: data: gap:; frame-src * self blob: data: gap:;",
-            "mainConfig": "./webpack.main.config.js",
-            "renderer": {
-              "config": "./webpack.renderer.config.js",
-              "entryPoints": [
-                {
-                  "html": "./src/index.html",
-                  "js": "./src/renderer.ts",
-                  "name": "main_window"
-                }
-              ]
-            }
-          }
-        ]
-      ]
-    }
-  },
-  "devDependencies": {
-    "@electron-forge/cli": "^6.0.0-beta.63",
-    "@electron-forge/maker-deb": "^6.0.0-beta.63",
-    "@electron-forge/maker-rpm": "^6.0.0-beta.63",
-    "@electron-forge/maker-squirrel": "^6.0.0-beta.63",
-    "@electron-forge/maker-zip": "^6.0.0-beta.63",
-    "@electron-forge/plugin-webpack": "^6.0.0-beta.63",
-    "@types/expect": "^24.3.0",
-    "@types/mocha": "^9.1.1",
-    "@types/sharp": "^0.30.5",
-    "@typescript-eslint/eslint-plugin": "^5.17.0",
-    "@typescript-eslint/parser": "^5.17.0",
-    "@vercel/webpack-asset-relocator-loader": "^1.7.0",
-    "css-loader": "^6.7.1",
-    "electron": "18.0.1",
-    "electron-icon-maker": "^0.0.5",
-    "eslint": "^8.12.0",
-    "eslint-plugin-import": "^2.25.4",
-    "fork-ts-checker-webpack-plugin": "^6.5.0",
-    "mocha": "^10.0.0",
-    "node-loader": "^2.0.0",
-    "sharp": "^0.30.7",
-    "style-loader": "^3.3.1",
-    "ts-loader": "^9.2.8",
-    "ts-mocha": "^10.0.0",
-    "typescript": "~4.5.4",
-    "@dschu012/d2s": "github:DiabloRun/d2s"
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
-    "chokidar": "^3.5.3",
-    "electron-fetch": "^1.7.4",
-    "electron-settings": "^4.0.2",
-    "electron-squirrel-startup": "^1.0.0",
-    "livesplit-client": "^1.0.2"
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "sharp": "^0.35.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
   }
 }

@@ -1,0 +1,17 @@
+[Unit]
+Description=Diablo II: Resurrected web timer
+Documentation=file://@APP_DIR@/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@APP_DIR@
+ExecStart=@NODE@ @APP_DIR@/dist/index.js
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

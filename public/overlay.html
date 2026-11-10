@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>D2R Timer Overlay</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/overlay.css" />
+  </head>
+  <body>
+    <div id="overlay">
+      <div class="timer-row">
+        <span class="label">RTA</span>
+        <span id="rta" class="time">0:00.00</span>
+      </div>
+      <div class="timer-row igt">
+        <span class="label">IGT</span>
+        <span id="igt" class="time">0:00.00</span>
+      </div>
+      <div id="status" class="status ok" hidden>
+        <span class="dot"></span>
+        <span id="statusText">PLAYING</span>
+      </div>
+    </div>
+    <script type="module" src="/overlay.js"></script>
+  </body>
+</html>
