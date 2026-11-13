@@ -1,0 +1,32 @@
+<!-- D2R LRT Tracker icon master. Transparent background; small ICO sizes are hand-tuned. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="gold" x1="0.12" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#F0D27A"/><stop offset="0.35" stop-color="#C49A48"/><stop offset="0.72" stop-color="#9A7030"/><stop offset="1" stop-color="#5E431F"/>
+    </linearGradient>
+    <linearGradient id="stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A0603"/><stop offset="0.5" stop-color="#7E1A0F"/><stop offset="1" stop-color="#D24A1E"/>
+    </linearGradient>
+    <radialGradient id="fire" cx="0.5" cy="0.95" r="0.8">
+      <stop offset="0" stop-color="#F8B25C" stop-opacity="0.75"/><stop offset="0.45" stop-color="#D9652A" stop-opacity="0.35"/><stop offset="1" stop-color="#7E1A0F" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="faceClip"><path d="M128 52 L188 84 L188 172 L128 204 L68 172 L68 84 Z"/></clipPath>
+  </defs>
+  <g transform="translate(0 10)">
+    <path d="M128 30 L208 76 L208 180 L128 226 L48 180 L48 76 Z" fill="url(#gold)"/>
+    <path d="M128 52 L188 84 L188 172 L128 204 L68 172 L68 84 Z" fill="url(#stone)"/>
+    <rect x="68" y="128" width="120" height="76" fill="url(#fire)" clip-path="url(#faceClip)"/>
+    <g clip-path="url(#faceClip)" opacity="0.55">
+         <path d="M128 52 L188 84 L128 128 Z" fill="#F28A4A" opacity="0.18"/>
+         <path d="M128 204 L188 172 L128 128 Z" fill="#3A0603" opacity="0.38"/>
+         <path d="M68 172 L128 204 L128 128 Z" fill="#3A0603" opacity="0.28"/>
+         <path d="M68 84 L128 52 L128 128 Z" fill="#F28A4A" opacity="0.10"/>
+         <path d="M68 84 L68 172 L128 128 Z" fill="#6E120A" opacity="0.18"/>
+         <path d="M188 84 L188 172 L128 128 Z" fill="#3A0603" opacity="0.18"/>
+       </g>
+    <path d="M128 52 L188 84 L188 172 L128 204 L68 172 L68 84 Z" fill="none" stroke="#F3D77F" stroke-opacity="0.22" stroke-width="2"/>
+    <rect x="123" y="24" width="10" height="8" rx="3" fill="url(#gold)"/><circle cx="128" cy="20" r="8" fill="none" stroke="url(#gold)" stroke-width="5"/>
+    <path d="M161.94 96.06 L132.24 134.24 L110.32 154.75 L106.79 151.21 L103.25 147.68 L123.76 125.76 Z" fill="#F4E3B2"/>
+    <circle cx="128" cy="130" r="9" fill="#C49A48" stroke="#F4E3B2" stroke-width="2"/>
+  </g>
+</svg>
