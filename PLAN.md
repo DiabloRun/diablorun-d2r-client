@@ -16,6 +16,9 @@ Success looks like:
   loading screen appearing/disappearing.
 - If LiveSplit is not running, the app waits quietly and reconnects.
 - Typical usage costs well under 1% CPU and does not affect game performance.
+- Windowed and Fullscreen both work at every resolution D2R offers (4:3, 16:10,
+  16:9, 5:4; 1280x720 through 3840x2160) and, where possible, at any other
+  Windowed size, aspect ratio, or Windows DPI scaling.
 
 ## 2. Scope
 
@@ -128,7 +131,8 @@ capture thread                         LiveSplit thread
   Duplication of the monitor containing the window, cropping to the window
   rectangle.
 - If captured frames are all black (exclusive fullscreen), log a clear hint to
-  use Borderless/Windowed and show it in the tray tooltip.
+  switch to Windowed or another supported Fullscreen configuration (see section
+  6) and show it in the tray tooltip.
 - Recreate the capture session on window size/mode change, display change, GPU
   reset, or WGC `Closed`.
 - Never leave LiveSplit paused because capture died: treat capture loss as
@@ -161,6 +165,55 @@ Validation:
 - Optional `confirmFrames` (default 1): require N consecutive frames before a
   transition, taking the timestamp of the first of those frames so precision is
   preserved. Only enable if real D2R captures show flicker.
+
+### Resolution, aspect ratio, and display-mode support
+
+D2R must work in both **Windowed** and **Fullscreen**, at every resolution it
+offers, and ideally at any resolution or aspect ratio the user can produce
+(arbitrary Windowed resize, non-native fullscreen, Windows display scaling). The
+2026 D2R options list is:
+
+- **16:9** — 1280x720, 1366x768, 1600x900, 1760x990, 1920x1080, 2560x1440,
+  3072x1728, 3200x1800, 3840x2160
+- **16:10** — 1280x800, 1440x900, 1680x1050, 1920x1200
+- **4:3** — 1600x1200, 2048x1536
+- Plus any lower 4:3/5:4 entries above the scroll (e.g. 800x600, 1024x768,
+  1280x1024) if the current client still offers them.
+
+Requirements:
+
+- The capture output keeps the aspect ratio with a 160 px short side: 16:9 →
+  160x90, 16:10 → 160x100, 4:3 → 160x120. The detector must not assume 16:9.
+- The detector's geometry checks are relative, but the scan-line fractions
+  (columns 0.44–0.56 of width, rows 0.34–0.66 of inner height) and the
+  door/legacy aspect windows must be validated at 4:3 and 16:10, not only 16:9.
+- Titlebar exclusion (`findContentTop`) must hold in Windowed mode at every
+  size, including small windows and arbitrary user-resized dimensions.
+- Window size must never be filtered against a whitelist. Any size at or above
+  the 160x160 minimum is captured; smaller windows are reported as not
+  capturable (D2R is not playable at that size). This covers arbitrary Windowed
+  sizes and unusual aspect ratios, not just the menu values.
+- Fullscreen at a resolution below the desktop resolution (GPU/OS upscaling)
+  must classify the same content identically. The detector sees the final
+  presented pixels, so detection must not depend on the native backbuffer size.
+- A resolution or display-mode change while running restarts the capture
+  session within about a second and does not desync LiveSplit state.
+- Windows DPI scaling (100–200%) must not affect detection. Capture is in
+  physical pixels and the WGC item size comes from the OS; the window rectangle
+  used by the DXGI fallback must use physical pixels too.
+- Windowed and Fullscreen must yield the same detector result for the same
+  content.
+- HDR on/off must not break detection; if HDR changes the captured color space,
+  the downscale/readback path must normalize to the same 8-bit sRGB values the
+  fixtures use.
+
+Fixture coverage (see section 16):
+
+- At least one door, legacy, logo, and gameplay fixture for each aspect group:
+  16:9 (1280x720 and 3840x2160), 16:10 (1280x800 or 1920x1200), 4:3
+  (1600x1200 or 2048x1536).
+- Every resolution in the D2R list is exercised in the manual matrix at least
+  once in Fullscreen and once in Windowed.
 
 ## 7. LiveSplit integration
 
@@ -399,6 +452,9 @@ the binary small and the behavior easy to reason about.
 ### Automated
 
 - Detector fixture tests (all cases listed in section 6).
+- Resolution/aspect matrix: 16:9 (1280x720, 3840x2160), 16:10 (1280x800,
+  1920x1200), 4:3 (1600x1200, 2048x1536); door, legacy, logo, and gameplay
+  fixtures must classify identically across aspect groups.
 - Config load/merge/clamp/save tests, including portable mode.
 - Protocol tests: command framing for pipe/TCP (`\n`) and WS (no newline),
   response parsing, `-` handling, timer phase parsing.
@@ -413,12 +469,21 @@ the binary small and the behavior easy to reason about.
 
 ### Manual
 
-- Run against real D2R in Windowed, Borderless, and Fullscreen modes.
+- Resolution matrix: every entry in the D2R list from section 6, in both
+  Fullscreen and Windowed. Minimum sign-off set: 1280x720, 1920x1080,
+  3840x2160, 1920x1200, 1600x1200. For each, verify door loading, legacy
+  loading, logo loading, and at least 60 s of gameplay with no false pause.
+- Resize Windowed mode to arbitrary sizes, including very wide and very tall
+  windows, and confirm detection still matches Fullscreen at the same content.
+- Try non-native fullscreen resolutions (game resolution below desktop
+  resolution) and confirm the same result.
+- Change resolution or display mode mid-session (Windowed ↔ Fullscreen) and
+  verify the session restarts and LiveSplit state stays correct.
 - Alt-tab, minimize, close/reopen the game mid-run.
 - Restart LiveSplit while loading; verify resync and that game time is not left
   paused.
 - Switch transport in settings while a loading screen is showing.
-- Multiple monitors, mixed DPI, resolution change, HDR on/off.
+- Multiple monitors, mixed DPI (100/125/150/200%), HDR on/off.
 - `--save-frames` captures of each loading variant for fixtures.
 
 ## 17. Phases and acceptance criteria
@@ -431,7 +496,10 @@ the binary small and the behavior easy to reason about.
 2. **Real capture**
    - Window discovery, WGC session, GPU downscale, readback, detector wiring.
    - DXGI fallback, black-frame detection, session restart handling.
-   - Done when: real D2R loading pauses/unpauses a live LiveSplit reliably.
+   - Done when: real D2R loading pauses/unpauses a live LiveSplit reliably at
+     1280x720, 1920x1080, 3840x2160, 1920x1200, and 1600x1200, in both
+     Fullscreen and Windowed, plus arbitrary Windowed sizes, with no gameplay
+     false positives.
 3. **Settings and polish**
    - Native settings dialog with live apply and test connection.
    - Hotkey, tray states, log rotation, autostart toggle.
@@ -446,11 +514,23 @@ the binary small and the behavior easy to reason about.
 ## 18. Risks / open questions
 
 - **WGC and exclusive fullscreen:** WGC can return black frames for some
-  fullscreen games. Mitigation: DXGI fallback plus a visible hint. D2R's
-  recommended mode is Borderless, which is well supported.
+  fullscreen games. Mitigation: DXGI fallback plus a visible hint. Windowed mode
+  is the most reliable fallback if a particular fullscreen configuration cannot
+  be captured.
 - **Downscale differences:** GPU filtering may produce slightly different pixels
   than the original `ffmpeg fast_bilinear` fixtures. Mitigation: mip/box
   downscale, then validate and tune thresholds against real Windows captures.
+- **Aspect-ratio coverage:** the existing fixtures are 16:9 only (1280x720,
+  2560x1440). 4:3 and 16:10 letterboxing plus different downscale ratios can
+  shift the geometry checks. Mitigation: the fixture matrix and manual matrix in
+  section 16; tune thresholds per aspect group only if a common threshold cannot
+  cover all of them.
+- **HDR capture:** WGC can deliver wide-gamut/HDR surfaces. The readback path
+  must convert to the same 8-bit sRGB values the fixtures use; if conversion is
+  unreliable, detect HDR and log a clear hint or prefer the DXGI path.
+- **Low-resolution windows:** arbitrarily small Windowed sizes can make the
+  loading frame only a few pixels wide after downscale. The 160x160 minimum and
+  relative geometry checks must be verified at the smallest offered 4:3 mode.
 - **Load screen fade-in:** "first detectable loading frame" may be later than the
   true load start, which systematically counts some load time. This is inherent
   to screen-based removal and not fixed by `precisionCorrection`.
