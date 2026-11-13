@@ -20,10 +20,8 @@ pub const TRAY_CALLBACK_MESSAGE: u32 = 0x0400 + 1;
 pub const MENU_TOGGLE: usize = 101;
 pub const MENU_SETTINGS: usize = 102;
 pub const MENU_RECONNECT: usize = 103;
-pub const MENU_OPEN_LOG: usize = 104;
-pub const MENU_OPEN_CONFIG: usize = 105;
-pub const MENU_AUTOSTART: usize = 106;
-pub const MENU_QUIT: usize = 107;
+pub const MENU_OPEN_CONFIG: usize = 104;
+pub const MENU_QUIT: usize = 105;
 
 pub struct TrayIcon {
     hwnd: HWND,
@@ -41,10 +39,6 @@ impl TrayIcon {
                 .or_else(|_| LoadIconW(None, PCWSTR(32512 as *const u16))) // IDI_APPLICATION
                 .unwrap_or_default()
         };
-        if icon.is_invalid() {
-            log_warn!("Could not load the tray icon");
-        }
-
         let taskbar_created_message = unsafe {
             windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(w!("TaskbarCreated"))
         };
@@ -63,10 +57,7 @@ impl TrayIcon {
 
     pub fn add(&mut self, tooltip: &str) {
         let mut data = self.data(tooltip);
-        let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
-        if !added {
-            log_warn!("Could not add the tray icon");
-        }
+        let _ = unsafe { Shell_NotifyIconW(NIM_ADD, &data) };
         self.added = true;
         data.uFlags = NIF_TIP;
         unsafe {
@@ -117,7 +108,7 @@ impl TrayIcon {
     }
 
     /// Show the tray menu at the cursor. Returns the chosen command id, or 0.
-    pub fn show_menu(&self, enabled: bool, autostart: bool) -> usize {
+    pub fn show_menu(&self, enabled: bool) -> usize {
         unsafe {
             let menu = match CreatePopupMenu() {
                 Ok(menu) => menu,
@@ -137,14 +128,7 @@ impl TrayIcon {
             let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
             let _ = AppendMenuW(menu, MF_STRING, MENU_RECONNECT, w!("Reconnect LiveSplit"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_LOG, w!("Open log"));
             let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_CONFIG, w!("Open config folder"));
-            let autostart_flags = if autostart {
-                MF_STRING | MF_CHECKED
-            } else {
-                MF_STRING
-            };
-            let _ = AppendMenuW(menu, autostart_flags, MENU_AUTOSTART, w!("Autostart"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit"));
 

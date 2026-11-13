@@ -8,8 +8,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::hotkeys;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransportKind {
     Pipe,
@@ -68,8 +66,6 @@ pub struct Config {
     pub capture: CaptureConfig,
     pub detection: DetectionConfig,
     pub livesplit: LiveSplitConfig,
-    pub hotkeys: HotkeyConfig,
-    pub logging: LoggingConfig,
 }
 
 impl Default for Config {
@@ -79,8 +75,6 @@ impl Default for Config {
             capture: CaptureConfig::default(),
             detection: DetectionConfig::default(),
             livesplit: LiveSplitConfig::default(),
-            hotkeys: HotkeyConfig::default(),
-            logging: LoggingConfig::default(),
         }
     }
 }
@@ -88,23 +82,19 @@ impl Default for Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
-    pub fps: u32,
     pub process: String,
     pub window_title: String,
     pub min_width: u32,
     pub min_height: u32,
-    pub pause_on_capture_lost: bool,
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            fps: 60,
             process: "D2R.exe".into(),
             window_title: "Diablo II: Resurrected".into(),
             min_width: 160,
             min_height: 160,
-            pause_on_capture_lost: true,
         }
     }
 }
@@ -141,36 +131,6 @@ impl Default for LiveSplitConfig {
             websocket_path: "/livesplit".into(),
             reconnect_ms: 2000,
             precision_correction: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct HotkeyConfig {
-    pub toggle: String,
-}
-
-impl Default for HotkeyConfig {
-    fn default() -> Self {
-        Self {
-            toggle: "Ctrl+Alt+L".into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LoggingConfig {
-    pub level: String,
-    pub max_size_mb: u64,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: "info".into(),
-            max_size_mb: 2,
         }
     }
 }
@@ -290,7 +250,6 @@ impl Config {
     pub fn normalize(&mut self) {
         let defaults = Self::default();
 
-        self.capture.fps = clamp(self.capture.fps, 1, 240);
         self.capture.min_width = clamp(self.capture.min_width, 1, 16384);
         self.capture.min_height = clamp(self.capture.min_height, 1, 16384);
         if self.capture.process.trim().is_empty() {
@@ -315,17 +274,6 @@ impl Config {
             self.livesplit.websocket_path = format!("/{}", self.livesplit.websocket_path.trim());
         }
         self.livesplit.reconnect_ms = clamp(self.livesplit.reconnect_ms, 100, 60_000);
-
-        if !self.hotkeys.toggle.trim().is_empty()
-            && hotkeys::parse_hotkey(&self.hotkeys.toggle).is_err()
-        {
-            self.hotkeys.toggle = defaults.hotkeys.toggle;
-        } else {
-            self.hotkeys.toggle = self.hotkeys.toggle.trim().to_string();
-        }
-
-        self.logging.level = normalize_log_level(&self.logging.level);
-        self.logging.max_size_mb = clamp(self.logging.max_size_mb, 1, 100);
     }
 
     /// Validate settings entered in the dialog. `normalize` is deliberately not
@@ -351,9 +299,6 @@ impl Config {
         {
             return Err("WebSocket path must start with '/'.".into());
         }
-        if self.capture.fps < 1 || self.capture.fps > 240 {
-            return Err("Capture FPS must be between 1 and 240.".into());
-        }
         if self.capture.min_width == 0 || self.capture.min_height == 0 {
             return Err("Minimum window size must be positive.".into());
         }
@@ -366,29 +311,8 @@ impl Config {
         if self.detection.confirm_frames < 1 || self.detection.confirm_frames > 10 {
             return Err("Confirm frames must be between 1 and 10.".into());
         }
-        if !self.hotkeys.toggle.trim().is_empty() {
-            hotkeys::parse_hotkey(&self.hotkeys.toggle)
-                .map_err(|error| format!("Hotkey: {error}"))?;
-        }
-        if !matches!(
-            self.logging.level.to_ascii_lowercase().as_str(),
-            "error" | "warn" | "info" | "debug" | "trace"
-        ) {
-            return Err("Log level must be error, warn, info, debug, or trace.".into());
-        }
-        if self.logging.max_size_mb == 0 {
-            return Err("Maximum log size must be positive.".into());
-        }
 
         Ok(())
-    }
-}
-
-fn normalize_log_level(value: &str) -> String {
-    let normalized = value.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "error" | "warn" | "info" | "debug" | "trace" => normalized,
-        _ => "info".into(),
     }
 }
 
@@ -429,7 +353,7 @@ mod tests {
         let config = parse_config(
             r#"{
                 "enabled": false,
-                "capture": { "fps": 30 },
+                "capture": { "min_width": 320, "fps": 30 },
                 "livesplit": { "transport": "tcp", "host": "localhost" },
                 "unknown": { "ignored": true }
             }"#,
@@ -437,7 +361,7 @@ mod tests {
         .expect("parse config");
 
         assert!(!config.enabled);
-        assert_eq!(config.capture.fps, 30);
+        assert_eq!(config.capture.min_width, 320);
         assert_eq!(config.capture.process, "D2R.exe");
         assert_eq!(config.livesplit.transport, TransportKind::Tcp);
         assert_eq!(config.livesplit.host, "localhost");
@@ -449,14 +373,14 @@ mod tests {
         let config = parse_config(
             r#"{
                 "enabled": "yes",
-                "capture": { "fps": "fast", "min_width": null },
+                "capture": { "process": null, "min_width": null },
                 "livesplit": { "port": 99999, "transport": "carrier-pigeon" }
             }"#,
         )
         .expect("parse config");
 
         assert!(config.enabled);
-        assert_eq!(config.capture.fps, 60);
+        assert_eq!(config.capture.process, "D2R.exe");
         assert_eq!(config.capture.min_width, 160);
         assert_eq!(config.livesplit.port, 65535);
         assert_eq!(config.livesplit.transport, TransportKind::Pipe);
@@ -465,20 +389,14 @@ mod tests {
     #[test]
     fn clamps_out_of_range_values() {
         let mut config = Config::default();
-        config.capture.fps = 0;
         config.capture.min_width = 0;
         config.detection.confirm_frames = 99;
         config.livesplit.reconnect_ms = 1;
-        config.logging.max_size_mb = 0;
-        config.hotkeys.toggle = "Ctrl+Nope".into();
         config.normalize();
 
-        assert_eq!(config.capture.fps, 1);
         assert_eq!(config.capture.min_width, 1);
         assert_eq!(config.detection.confirm_frames, 10);
         assert_eq!(config.livesplit.reconnect_ms, 100);
-        assert_eq!(config.logging.max_size_mb, 1);
-        assert_eq!(config.hotkeys.toggle, "Ctrl+Alt+L");
     }
 
     #[test]
@@ -519,7 +437,7 @@ mod tests {
         let path = dir.join("config.json");
 
         let mut config = Config::default();
-        config.capture.fps = 45;
+        config.capture.min_width = 320;
         config.livesplit.transport = TransportKind::Tcp;
         save_config(&path, &config).expect("save config");
 

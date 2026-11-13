@@ -19,6 +19,10 @@ use win32::scale::{Downscaler, ScaledFrame};
 use win32::wgc::WgcCapture;
 use win32::window;
 
+/// The detector is tuned for 60 captured frames per second. Capture FPS is not
+/// configurable.
+const CAPTURE_FPS: u32 = 60;
+
 pub struct CapturedTexture {
     pub texture: ID3D11Texture2D,
     pub timestamp: i64,
@@ -97,7 +101,6 @@ struct Runtime {
     had_capture: bool,
     hint: Option<String>,
     black_since: Option<Instant>,
-    lost_logged: bool,
 }
 
 struct ConfirmState {
@@ -158,16 +161,7 @@ impl ConfirmState {
 
 pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
     let mut dumper = match save_frames {
-        Some(directory) => match FrameDumper::new(directory) {
-            Ok(dumper) => {
-                log_info!("Saving detector frames to {}", dumper.directory.display());
-                Some(dumper)
-            }
-            Err(error) => {
-                log_warn!("Could not create frame dump directory: {error}");
-                None
-            }
-        },
+        Some(directory) => FrameDumper::new(directory).ok(),
         None => None,
     };
     let com_initialized = unsafe {
@@ -180,9 +174,8 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
     let device = match create_device() {
         Ok(device) => device,
         Err(error) => {
-            shared.set_capture_status(CaptureStatus::Error, error.clone());
+            shared.set_capture_status(CaptureStatus::Error, error);
             shared.set_desired_paused(false);
-            log_error!("Could not create D3D11 device: {error}");
             if com_initialized {
                 unsafe { windows::Win32::System::WinRT::RoUninitialize() };
             }
@@ -195,7 +188,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
         Err(error) => {
             shared.set_capture_status(CaptureStatus::Error, error.to_string());
             shared.set_desired_paused(false);
-            log_error!("Could not create downscaler: {error}");
             if com_initialized {
                 unsafe { windows::Win32::System::WinRT::RoUninitialize() };
             }
@@ -209,7 +201,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
         had_capture: false,
         hint: None,
         black_since: None,
-        lost_logged: false,
     };
     let mut backend = Backend::Wgc;
     let mut wgc_failures = 0u32;
@@ -227,7 +218,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
             runtime.had_capture = false;
             runtime.hint = None;
             runtime.black_since = None;
-            runtime.lost_logged = false;
             shared.set_desired_paused(false);
             shared.set_capture_status(CaptureStatus::Disabled, "");
             shared.set_hint(None);
@@ -254,56 +244,35 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
             if runtime.had_capture {
                 shared.set_capture_status(CaptureStatus::Lost, "D2R window lost");
                 shared.set_hint(runtime.hint.clone());
-                shared.set_desired_paused(capture_lost_should_pause(
-                    &capture_config,
-                    runtime.had_capture,
-                ));
-                if !runtime.lost_logged {
-                    log_warn!(
-                        "D2R window lost; {} game time",
-                        if capture_config.pause_on_capture_lost {
-                            "pausing"
-                        } else {
-                            "not pausing"
-                        }
-                    );
-                    runtime.lost_logged = true;
-                }
             } else {
                 shared.set_capture_status(CaptureStatus::Searching, "waiting for D2R");
-                shared.set_desired_paused(false);
             }
+            // Game time only pauses for loading screens. If D2R is closed or
+            // capture is lost, the timer keeps running.
+            shared.set_desired_paused(false);
 
             shared.wait_for_revision(snapshot.revision, Duration::from_millis(500));
             continue;
         };
 
         let expected_size = (found.client_width, found.client_height);
-        let mut capture = match start_capture(backend, &device, found.hwnd, capture_config.fps) {
+        let mut capture = match start_capture(backend, &device, found.hwnd) {
             Ok(capture) => capture,
             Err(error) => {
                 if backend == Backend::Wgc {
                     wgc_failures += 1;
-                    log_warn!("WGC failed ({}): {error}", wgc_failures);
                     backend = Backend::Dxgi;
                     continue;
                 }
 
-                log_warn!("Capture start failed: {error}");
                 shared.set_capture_status(CaptureStatus::Error, format!("capture error: {error}"));
-                if runtime.had_capture {
-                    shared.set_desired_paused(capture_lost_should_pause(
-                        &capture_config,
-                        runtime.had_capture,
-                    ));
-                }
+                shared.set_desired_paused(false);
                 shared.wait_for_revision(snapshot.revision, Duration::from_secs(2));
                 continue;
             }
         };
 
         runtime.had_capture = true;
-        runtime.lost_logged = false;
         shared.set_capture_status(
             CaptureStatus::Capturing,
             format!(
@@ -317,12 +286,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
                     "playing"
                 }
             ),
-        );
-        log_info!(
-            "Capturing D2R window {}x{} via {}",
-            expected_size.0,
-            expected_size.1,
-            capture.kind().label()
         );
 
         let confirm_frames = snapshot.settings.detection.confirm_frames.max(1);
@@ -372,17 +335,12 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
                 if capture.kind() == Backend::Wgc {
                     wgc_failures += 1;
                     if wgc_failures >= 3 {
-                        log_warn!("WGC failed repeatedly; switching to DXGI fallback");
                         backend = Backend::Dxgi;
                     }
                 }
                 shared.set_capture_status(CaptureStatus::Lost, "capture lost");
-                if runtime.had_capture {
-                    shared.set_desired_paused(capture_lost_should_pause(
-                        &capture_config,
-                        runtime.had_capture,
-                    ));
-                }
+                // A lost capture is not a loading screen; keep game time running.
+                shared.set_desired_paused(false);
                 shared.wait_for_revision(shared.snapshot().revision, Duration::from_millis(200));
             }
         }
@@ -430,20 +388,12 @@ fn capture_session(
                 last_frame_at = Instant::now();
 
                 if backend == Backend::Wgc && frame.size != capture.size() {
-                    log_info!(
-                        "Capture size changed from {:?} to {:?}; restarting",
-                        capture.size(),
-                        frame.size
-                    );
                     return BreakReason::Restart;
                 }
 
                 let scaled = match scaler.downscale(&frame.texture) {
                     Ok(scaled) => scaled,
-                    Err(error) => {
-                        log_warn!("Downscale failed: {error}");
-                        return BreakReason::Lost;
-                    }
+                    Err(_) => return BreakReason::Lost,
                 };
 
                 if scaled.all_black {
@@ -454,7 +404,6 @@ fn capture_session(
                         if runtime.hint.as_deref() != Some(message) {
                             runtime.hint = Some(message.to_string());
                             shared.set_hint(Some(message.to_string()));
-                            log_warn!("Captured frames are black; falling back to DXGI");
                         }
                         return BreakReason::BlackFallback;
                     }
@@ -477,11 +426,6 @@ fn capture_session(
 
                 if confirmed != runtime.loading {
                     runtime.loading = confirmed;
-                    if confirmed {
-                        log_info!("Loading screen detected");
-                    } else {
-                        log_info!("Gameplay detected");
-                    }
                     shared.set_capture_status(
                         CaptureStatus::Capturing,
                         format!(
@@ -492,12 +436,6 @@ fn capture_session(
                             if confirmed { "loading" } else { "playing" }
                         ),
                     );
-                    if let Some((state, timestamp)) = runtime.confirm.last_transition {
-                        log_debug!(
-                            "Detector transition at frame timestamp {} (loading={state})",
-                            timestamp
-                        );
-                    }
                 }
                 // Also covers the first frame after a restart or a lost window.
                 shared.set_desired_paused_at(runtime.loading, frame.timestamp);
@@ -517,30 +455,21 @@ fn capture_session(
                 }
 
                 if backend == Backend::Wgc && last_frame_at.elapsed() >= Duration::from_secs(10) {
-                    log_warn!("WGC stopped delivering frames");
                     return BreakReason::Lost;
                 }
             }
-            Err(error) => {
-                log_warn!("Capture error: {error}");
-                return BreakReason::Lost;
-            }
+            Err(_) => return BreakReason::Lost,
         }
     }
-}
-
-fn capture_lost_should_pause(config: &CaptureConfig, had_capture: bool) -> bool {
-    had_capture && config.pause_on_capture_lost
 }
 
 fn start_capture(
     backend: Backend,
     device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
     hwnd: windows::Win32::Foundation::HWND,
-    fps: u32,
 ) -> Result<ActiveCapture, CaptureError> {
     match backend {
-        Backend::Wgc => WgcCapture::start(hwnd, device, fps).map(ActiveCapture::Wgc),
+        Backend::Wgc => WgcCapture::start(hwnd, device, CAPTURE_FPS).map(ActiveCapture::Wgc),
         Backend::Dxgi => DxgiCapture::start(device, hwnd).map(ActiveCapture::Dxgi),
     }
 }
@@ -581,9 +510,7 @@ impl FrameDumper {
             timestamp as u64,
             if raw { "loading" } else { "gameplay" }
         );
-        if let Err(error) = std::fs::write(self.directory.join(&file), &frame.data) {
-            log_warn!("Could not write frame dump: {error}");
-        } else {
+        if std::fs::write(self.directory.join(&file), &frame.data).is_ok() {
             let _ = writeln!(
                 self.csv,
                 "{},{},{},{},{},{},{}",
@@ -654,15 +581,5 @@ mod tests {
     fn black_frame_produces_no_detection() {
         let frame = vec![0u8; 160 * 90 * 4];
         assert!(!detector::detect_loading(&frame, 160, 90));
-    }
-
-    #[test]
-    fn capture_loss_only_pauses_after_capture_has_started() {
-        let mut config = CaptureConfig::default();
-        assert!(capture_lost_should_pause(&config, true));
-        assert!(!capture_lost_should_pause(&config, false));
-
-        config.pause_on_capture_lost = false;
-        assert!(!capture_lost_should_pause(&config, true));
     }
 }

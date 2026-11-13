@@ -3,21 +3,22 @@
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{
-    CheckDlgButton, IsDlgButtonChecked, BST_CHECKED, BST_UNCHECKED,
-};
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DialogBoxIndirectParamW, EndDialog, GetDlgItem, GetWindowTextLengthW,
-    GetWindowTextW, MapDialogRect, MessageBoxW, SendMessageW, SetDlgItemTextW, SetWindowLongPtrW,
-    SetWindowTextW, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
-    ES_AUTOHSCROLL, GWLP_USERDATA, MB_ICONWARNING, MB_OK, WM_GETFONT, WM_SETFONT, WS_CHILD,
+    BringWindowToTop, CreateDialogIndirectParamW, CreateWindowExW, DestroyWindow,
+    DialogBoxIndirectParamW, EndDialog, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW,
+    GetWindowTextW, LoadIconW, MapDialogRect, MessageBoxW, SendMessageW, SetDlgItemTextW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CBS_DROPDOWNLIST,
+    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL,
+    MB_ICONWARNING, MB_OK, SW_SHOWNORMAL, WM_GETFONT, WM_SETFONT, WM_SETICON, WS_CHILD,
     WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::config::{Config, LiveSplitConfig, TransportKind};
-use crate::hotkeys;
 use crate::transport;
+
+pub const WM_APP_SETTINGS_SAVED: u32 = 0x8000 + 4;
+pub const WM_APP_SETTINGS_CLOSED: u32 = 0x8000 + 5;
 
 const ID_TRANSPORT: i32 = 101;
 const ID_HOST: i32 = 102;
@@ -26,26 +27,74 @@ const ID_WS_PATH: i32 = 104;
 const ID_RECONNECT: i32 = 105;
 const ID_TEST: i32 = 106;
 const ID_TEST_STATUS: i32 = 107;
-const ID_ENABLED: i32 = 110;
-const ID_PAUSE_LOST: i32 = 111;
-const ID_FPS: i32 = 112;
-const ID_HOTKEY: i32 = 120;
 const ID_SAVE: i32 = 130;
 const ID_CANCEL: i32 = 131;
 
 const IDOK: isize = 1;
 const IDCANCEL: isize = 2;
+const IDCANCEL_ID: i32 = 2;
 
 struct DialogState {
     config: Config,
+    parent: HWND,
     result: Option<Config>,
+    modal: bool,
+}
+
+/// Open the settings dialog without blocking the app's message loop.
+pub fn open(parent: HWND, current: &Config) -> Result<HWND, String> {
+    let state = Box::new(DialogState {
+        config: current.clone(),
+        parent,
+        result: None,
+        modal: false,
+    });
+    let state_pointer = Box::into_raw(state);
+    let template = build_template();
+    let instance = unsafe { GetModuleHandleW(None).unwrap_or_default() };
+    let instance = HINSTANCE(instance.0);
+
+    let result = unsafe {
+        CreateDialogIndirectParamW(
+            Some(instance),
+            template.as_ptr() as *const _,
+            None,
+            Some(dialog_proc),
+            LPARAM(state_pointer as isize),
+        )
+    };
+
+    match result {
+        Ok(hwnd) => {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+                let _ = BringWindowToTop(hwnd);
+                let _ = SetForegroundWindow(hwnd);
+                let _ = SetActiveWindow(hwnd);
+                if let Ok(control) = GetDlgItem(Some(hwnd), ID_TRANSPORT) {
+                    let _ = SetFocus(Some(control));
+                }
+            }
+            Ok(hwnd)
+        }
+        Err(error) => {
+            unsafe {
+                drop(Box::from_raw(state_pointer));
+            }
+            Err(error.to_string())
+        }
+    }
 }
 
 /// Show the modal settings dialog. Returns the new config when Save is pressed.
+/// Kept for the native dialog tests; the app uses the modeless `open`.
+#[allow(dead_code)]
 pub fn show(parent: HWND, current: &Config) -> Option<Config> {
     let mut state = DialogState {
         config: current.clone(),
+        parent,
         result: None,
+        modal: true,
     };
 
     let template = build_template();
@@ -68,16 +117,24 @@ pub fn show(parent: HWND, current: &Config) -> Option<Config> {
     }
 }
 
+/// Take the config saved by a modeless dialog. Must be called from the
+/// `WM_APP_SETTINGS_SAVED` handler, before the dialog is destroyed.
+pub fn take_result(hwnd: HWND) -> Option<Config> {
+    unsafe { dialog_state(hwnd).and_then(|state| state.result.take()) }
+}
+
 fn build_template() -> Vec<u8> {
     let mut template = Vec::new();
-    let style: u32 = 0x80 | 0x40 | 0x0800 | 0x8000_0000 | 0x00C0_0000 | 0x0008_0000; // modal frame, setfont, center, popup, caption, sysmenu
+    // modal frame, setfont, shellfont, popup, caption, sysmenu
+    let style: u32 = 0x80 | 0x40 | 0x0800 | 0x8000_0000 | 0x00C0_0000 | 0x0008_0000;
+    let ex_style: u32 = 0x0004_0000; // WS_EX_APPWINDOW: show the dialog in the taskbar
     template.extend_from_slice(&style.to_le_bytes());
-    template.extend_from_slice(&0u32.to_le_bytes());
+    template.extend_from_slice(&ex_style.to_le_bytes());
     template.extend_from_slice(&0u16.to_le_bytes()); // no items
     template.extend_from_slice(&0i16.to_le_bytes()); // x
     template.extend_from_slice(&0i16.to_le_bytes()); // y
-    template.extend_from_slice(&320i16.to_le_bytes()); // cx
-    template.extend_from_slice(&370i16.to_le_bytes()); // cy
+    template.extend_from_slice(&340i16.to_le_bytes()); // cx
+    template.extend_from_slice(&250i16.to_le_bytes()); // cy
     template.extend_from_slice(&0u16.to_le_bytes()); // menu
     template.extend_from_slice(&0u16.to_le_bytes()); // class
     for unit in "D2R Load Remover Settings".encode_utf16() {
@@ -104,6 +161,21 @@ unsafe extern "system" fn dialog_proc(
             let state = unsafe { &mut *(lparam.0 as *mut DialogState) };
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as *mut DialogState as isize);
+                let module = GetModuleHandleW(None).unwrap_or_default();
+                if let Ok(icon) = LoadIconW(Some(HINSTANCE(module.0)), PCWSTR(1 as *const u16)) {
+                    let _ = SendMessageW(
+                        hwnd,
+                        WM_SETICON,
+                        Some(WPARAM(ICON_BIG as usize)),
+                        Some(LPARAM(icon.0 as isize)),
+                    );
+                    let _ = SendMessageW(
+                        hwnd,
+                        WM_SETICON,
+                        Some(WPARAM(ICON_SMALL as usize)),
+                        Some(LPARAM(icon.0 as isize)),
+                    );
+                }
             }
             create_controls(hwnd, state);
             LRESULT(1).0
@@ -126,12 +198,23 @@ unsafe extern "system" fn dialog_proc(
                         }
                         state.result = Some(config);
                         unsafe {
-                            let _ = EndDialog(hwnd, IDOK);
+                            if state.modal {
+                                let _ = EndDialog(hwnd, IDOK);
+                            } else {
+                                let parent = state.parent;
+                                let _ = SendMessageW(
+                                    parent,
+                                    WM_APP_SETTINGS_SAVED,
+                                    Some(WPARAM(hwnd.0 as usize)),
+                                    Some(LPARAM(0)),
+                                );
+                                let _ = DestroyWindow(hwnd);
+                            }
                         }
                     }
                 }
-                ID_CANCEL => unsafe {
-                    let _ = EndDialog(hwnd, IDCANCEL);
+                ID_CANCEL | IDCANCEL_ID => unsafe {
+                    close_dialog(hwnd, state);
                 },
                 ID_TEST => {
                     if let Some(config) = read_ui(hwnd, state) {
@@ -152,19 +235,61 @@ unsafe extern "system" fn dialog_proc(
                         }
                     }
                 }
-                ID_TRANSPORT if code == 1 => update_control_states(hwnd, state),
+                ID_TRANSPORT if code == 1 => update_control_states(hwnd),
                 _ => {}
             }
             0
         }
         0x0010 => {
             // WM_CLOSE
-            unsafe {
-                let _ = EndDialog(hwnd, IDCANCEL);
+            if let Some(state) = unsafe { dialog_state(hwnd) } {
+                unsafe {
+                    close_dialog(hwnd, state);
+                }
+            }
+            0
+        }
+        0x0002 => {
+            // WM_DESTROY
+            if let Some(state) = unsafe { dialog_state(hwnd) } {
+                if !state.modal {
+                    unsafe {
+                        let _ = SendMessageW(
+                            state.parent,
+                            WM_APP_SETTINGS_CLOSED,
+                            Some(WPARAM(hwnd.0 as usize)),
+                            Some(LPARAM(0)),
+                        );
+                    }
+                }
+            }
+            0
+        }
+        0x0082 => {
+            // WM_NCDESTROY
+            let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut DialogState;
+            if !pointer.is_null() {
+                unsafe {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                    let state = &*pointer;
+                    if !state.modal {
+                        drop(Box::from_raw(pointer));
+                    }
+                }
             }
             0
         }
         _ => 0,
+    }
+}
+
+unsafe fn close_dialog(hwnd: HWND, state: &DialogState) {
+    unsafe {
+        if state.modal {
+            let _ = EndDialog(hwnd, IDCANCEL);
+        } else {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 }
 
@@ -248,63 +373,18 @@ fn create_controls(hwnd: HWND, state: &DialogState) {
     label(hwnd, "ms", 180, 118);
 
     button(hwnd, ID_TEST, "Test connection", 8, 140, 82, 18, font);
-    text(hwnd, ID_TEST_STATUS, "Not tested", 95, 142, 210, 16, font);
+    text(hwnd, ID_TEST_STATUS, "Not tested", 95, 142, 235, 16, font);
 
-    section(hwnd, "Detection", 8, 176);
-    checkbox(
-        hwnd,
-        ID_ENABLED,
-        "Enable load removal",
-        8,
-        192,
-        240,
-        16,
-        state.config.enabled,
-        font,
-    );
-    checkbox(
-        hwnd,
-        ID_PAUSE_LOST,
-        "Pause game time when D2R capture is lost",
-        8,
-        210,
-        280,
-        16,
-        state.config.capture.pause_on_capture_lost,
-        font,
-    );
-    label(hwnd, "Capture FPS:", 8, 232);
-    edit(
-        hwnd,
-        ID_FPS,
-        95,
-        230,
-        60,
-        14,
-        &state.config.capture.fps.to_string(),
-        font,
-    );
+    section(hwnd, "Capture", 8, 176);
+    text(hwnd, 0, "Capture FPS: 60 (fixed)", 8, 192, 240, 16, font);
 
-    section(hwnd, "Hotkey", 8, 258);
-    label(hwnd, "Toggle enable:", 8, 276);
-    edit(
-        hwnd,
-        ID_HOTKEY,
-        95,
-        274,
-        150,
-        14,
-        &state.config.hotkeys.toggle,
-        font,
-    );
+    text(hwnd, 0, "Ready", 8, 220, 150, 16, font);
+    button(hwnd, ID_SAVE, "Save & Close", 170, 218, 90, 20, font);
+    button(hwnd, ID_CANCEL, "Cancel", 268, 218, 64, 20, font);
 
-    text(hwnd, 0, "Ready", 8, 338, 160, 16, font);
-    button(hwnd, ID_SAVE, "Save", 180, 336, 60, 20, font);
-    button(hwnd, ID_CANCEL, "Cancel", 248, 336, 60, 20, font);
-
-    update_control_states(hwnd, state);
+    update_control_states(hwnd);
     unsafe {
-        if let Ok(control) = GetDlgItem(Some(hwnd), ID_HOST) {
+        if let Ok(control) = GetDlgItem(Some(hwnd), ID_TRANSPORT) {
             let _ = SetFocus(Some(control));
         }
     }
@@ -350,37 +430,6 @@ fn edit(hwnd: HWND, id: i32, x: i32, y: i32, width: i32, height: i32, value: &st
         WS_EX_CLIENTEDGE.0,
     ) {
         set_font(control, font);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn checkbox(
-    hwnd: HWND,
-    id: i32,
-    value: &str,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    checked: bool,
-    font: usize,
-) {
-    if let Some(control) = create(
-        hwnd,
-        w!("BUTTON"),
-        value,
-        id,
-        x,
-        y,
-        width,
-        height,
-        WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32,
-        0,
-    ) {
-        set_font(control, font);
-        unsafe {
-            let _ = CheckDlgButton(hwnd, id, if checked { BST_CHECKED } else { BST_UNCHECKED });
-        }
     }
 }
 
@@ -498,7 +547,7 @@ fn set_font(control: HWND, font: usize) {
     }
 }
 
-fn update_control_states(hwnd: HWND, _state: &DialogState) {
+fn update_control_states(hwnd: HWND) {
     let selection = unsafe {
         let Ok(control) = GetDlgItem(Some(hwnd), ID_TRANSPORT) else {
             return;
@@ -542,19 +591,6 @@ fn read_ui(hwnd: HWND, state: &DialogState) -> Option<Config> {
         reconnect_ms: u64::from(parse_u32(&get_text(hwnd, ID_RECONNECT)).unwrap_or(0)),
         precision_correction: config.livesplit.precision_correction,
     };
-
-    config.enabled = unsafe { IsDlgButtonChecked(hwnd, ID_ENABLED) == BST_CHECKED.0 };
-    config.capture.pause_on_capture_lost =
-        unsafe { IsDlgButtonChecked(hwnd, ID_PAUSE_LOST) == BST_CHECKED.0 };
-    config.capture.fps = parse_u32(&get_text(hwnd, ID_FPS)).unwrap_or(0);
-    config.hotkeys.toggle = get_text(hwnd, ID_HOTKEY);
-
-    if !config.hotkeys.toggle.trim().is_empty()
-        && hotkeys::parse_hotkey(&config.hotkeys.toggle).is_err()
-    {
-        show_error(hwnd, "Hotkey must be a valid combination or empty.");
-        return None;
-    }
 
     Some(config)
 }
@@ -656,7 +692,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             if let Some(hwnd) = find_dialog() {
                 unsafe {
-                    let _ = SetDlgItemTextW(hwnd, ID_FPS, w!("30"));
+                    let _ = SetDlgItemTextW(hwnd, ID_HOST, w!("192.168.1.10"));
                     let _ =
                         PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(ID_SAVE as usize), LPARAM(0));
                 }
@@ -667,12 +703,12 @@ mod tests {
 
         assert!(saved, "settings dialog window was not created");
         let config = thread.join().expect("dialog thread");
-        assert_eq!(config.expect("saved config").capture.fps, 30);
+        assert_eq!(config.expect("saved config").livesplit.host, "192.168.1.10");
     }
 
     #[test]
     #[ignore = "drives a native dialog; run with --ignored --test-threads=1"]
-    fn dialog_rejects_invalid_fps_without_closing() {
+    fn dialog_rejects_invalid_port_without_closing() {
         let _guard = DIALOG_TEST_LOCK.lock().expect("dialog test lock");
         let thread = std::thread::spawn(|| show(HWND::default(), &Config::default()));
 
@@ -681,7 +717,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             if let Some(hwnd) = find_dialog() {
                 unsafe {
-                    let _ = SetDlgItemTextW(hwnd, ID_FPS, w!("0"));
+                    let _ = SetDlgItemTextW(hwnd, ID_PORT, w!("0"));
                     let _ =
                         PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(ID_SAVE as usize), LPARAM(0));
                 }

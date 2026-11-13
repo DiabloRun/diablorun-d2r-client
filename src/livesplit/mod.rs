@@ -108,7 +108,6 @@ impl Controller {
             ));
         }
 
-        log_debug!("LiveSplit command: {command}");
         let connection = self.connection()?;
         connection.send_command(command)?;
 
@@ -192,25 +191,19 @@ pub type Connector = dyn Fn(&LiveSplitConfig) -> io::Result<Box<dyn Connection>>
 fn mark_disconnected(
     shared: &SharedState,
     controller: &mut Controller,
-    last_connect_error: &mut Option<String>,
     next_retry: &mut Instant,
     reconnect_ms: u64,
-    context: &str,
     error: io::Error,
 ) {
     controller.disconnect();
-    *last_connect_error = Some(error.to_string());
-    log_warn!("{context}: {error}");
     shared.set_livesplit_status(LiveSplitStatus::Disconnected, error.to_string());
     *next_retry = Instant::now() + Duration::from_millis(reconnect_ms);
 }
 
 pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
-    log_info!("LiveSplit worker started");
     let initial = shared.snapshot();
     let mut controller = Controller::new(initial.settings.livesplit.clone());
     let mut last_reconnect_generation = initial.reconnect_generation;
-    let mut last_connect_error: Option<String> = None;
     let mut next_retry = Instant::now();
     let mut next_poll = Instant::now();
 
@@ -249,7 +242,6 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                 shared.set_livesplit_status(LiveSplitStatus::Connecting, "");
                 match controller.connect(desired, connector.as_ref()) {
                     Ok(()) => {
-                        last_connect_error = None;
                         shared.set_livesplit_status(
                             LiveSplitStatus::Connected,
                             format!(
@@ -258,18 +250,10 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                                 controller.phase().as_str()
                             ),
                         );
-                        log_info!("Connected to LiveSplit via {}", controller.transport_name());
                         next_poll = Instant::now() + poll_interval(desired);
                     }
                     Err(error) => {
                         controller.disconnect();
-                        let message = error.to_string();
-                        if last_connect_error.as_deref() != Some(message.as_str()) {
-                            log_warn!("LiveSplit connection failed: {message}");
-                            last_connect_error = Some(message.clone());
-                        } else {
-                            log_debug!("LiveSplit connection still unavailable: {message}");
-                        }
                         shared.set_livesplit_status(
                             LiveSplitStatus::Disconnected,
                             format!("{}: {error}", controller.transport_name()),
@@ -297,10 +281,8 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                     mark_disconnected(
                         &shared,
                         &mut controller,
-                        &mut last_connect_error,
                         &mut next_retry,
                         reconnect_ms,
-                        "LiveSplit command failed",
                         error,
                     );
                     break;
@@ -315,10 +297,8 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                     mark_disconnected(
                         &shared,
                         &mut controller,
-                        &mut last_connect_error,
                         &mut next_retry,
                         reconnect_ms,
-                        "LiveSplit command failed",
                         error,
                     );
                 }
@@ -340,10 +320,8 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                     Err(error) => mark_disconnected(
                         &shared,
                         &mut controller,
-                        &mut last_connect_error,
                         &mut next_retry,
                         reconnect_ms,
-                        "LiveSplit connection lost",
                         error,
                     ),
                 }

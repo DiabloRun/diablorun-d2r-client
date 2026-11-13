@@ -8,7 +8,7 @@ this app only drives its game-time pause state.
 - Named-pipe transport by default, with TCP and WebSocket options.
 - Windowed and Fullscreen capture through Windows Graphics Capture, with a DXGI
   Desktop Duplication fallback.
-- Tray menu, native settings dialog, global enable/disable hotkey, log file.
+- Tray menu and native settings dialog.
 - Detector is ported from the Linux client and covered by fixtures at 16:9,
   16:10, and 4:3.
 
@@ -18,8 +18,8 @@ this app only drives its game-time pause state.
 2. Run `d2r-load-remover.exe`.
 3. Start D2R. The tray tooltip shows whether the game window is being captured
    and whether LiveSplit is connected.
-4. Loads are paused automatically. Use the tray menu or `Ctrl+Alt+L` to toggle
-   load removal.
+4. Loads are paused automatically. Use the tray menu to enable or disable load
+   removal.
 
 If LiveSplit is not running yet, the app waits and reconnects every two seconds.
 Commands are only sent when the desired state changes; on reconnect the current
@@ -60,6 +60,9 @@ LiveSplit can only be paused after the first loading frame has been presented,
 so each load still adds roughly one frame of load time (about 10–20 ms at
 60 fps). This is inherent to screen-based removal.
 
+Game time is only paused while a loading screen is visible. If D2R is closed,
+minimized, or capture is lost, game time keeps running.
+
 `precisionCorrection` remains reserved and default-off in this build; the app
 does not mutate LiveSplit's current game time. It should only be enabled after
 the overshoot has been measured on recorded video.
@@ -93,31 +96,30 @@ frame, and the last loading frame are the most useful fixtures; a full sequence
 does not need to be committed.
 
 `--save-frames` records every captured frame, so keep the run short and delete
-old dumps when finished. The detector runs at the configured capture FPS.
+old dumps when finished. Capture and detection always run at 60 FPS.
 
 ## Settings
 
-The tray menu opens a native Win32 dialog:
-
-- transport, host, port, WebSocket path, reconnect delay,
-- enable/disable load removal,
-- pause game time when D2R capture is lost,
-- capture FPS,
-- toggle hotkey.
-
-Save applies immediately: the LiveSplit connection is re-established and
-detection settings are applied without restarting the app. Test connection uses
-the values currently in the dialog and a 1.5-second timeout.
+The tray menu opens a native Win32 settings dialog for the LiveSplit connection
+(transport, host, port, WebSocket path, and reconnect delay). Enable/disable load
+removal is available from the tray menu. The settings window has its own taskbar
+entry and is brought to the foreground when opened. Capture FPS is fixed at 60.
+**Save & Close** applies immediately: the LiveSplit connection is re-established
+and detection settings are applied without restarting the app. Test connection
+uses the values currently in the dialog and a 1.5-second timeout.
 
 Configuration is portable: if `config.json` exists next to the executable it is
 used, otherwise `%APPDATA%\diablorun-d2r-load-remover\config.json` is used.
-Autostart is opt-in and writes only an `HKCU\...\Run` value.
+During normal operation, `config.json` is the only file the app writes.
 
 ## Command line
 
+The release executable is a GUI-subsystem application, so it does not open a
+console window when started normally. Use `--console` to attach one when running
+from a terminal.
+
 ```text
 --console              Attach a console for development output
---log-level <level>    error, warn, info, debug, or trace
 --save-frames <dir>    Dump raw detector frames for fixture creation
 --replay-frames <dir>  Replay a saved frame dump through the detector
 --no-tray              Run headless without a tray icon
@@ -125,9 +127,8 @@ Autostart is opt-in and writes only an `HKCU\...\Run` value.
 --version              Show the version
 ```
 
-Logs are written to `logs\client.log` next to the config file and are size
-capped. `--no-tray` is useful for automation; stop it with Ctrl+C or terminate
-the process. A second launch opens the running instance's settings dialog.
+`--no-tray` is useful for automation; stop it with Ctrl+C or terminate the
+process. A second launch opens the running instance's settings dialog.
 
 ## Supported display modes
 
@@ -146,18 +147,89 @@ still returns unusable frames, switch to Windowed mode or disable HDR.
 
 ## Building
 
-Requires Rust stable and the MSVC C++ build tools (Visual Studio Build Tools with
-the Desktop development with C++ workload). The release profile uses a static
-CRT and LTO.
+Requires Rust stable and a Windows linker toolchain. This project is released
+with the GNU target and the WinLibs MinGW-w64 toolchain installed through WinGet.
+The MSVC target with Visual Studio Build Tools also works. The release profile
+uses a static CRT and LTO.
 
 ```powershell
-cargo build --release
-cargo test
+cargo +stable-x86_64-pc-windows-gnu build --release
+cargo +stable-x86_64-pc-windows-gnu test
 ```
 
 The resulting `target\release\d2r-load-remover.exe` is self-contained. Resource
-embedding (icon and manifest) uses `winresource`; if the resource compiler is not
-available, the code still builds and the app falls back to the stock tray icon.
+embedding (icon and version info) uses `winresource` and requires `windres` from
+WinLibs on `PATH`; without it the app still builds but falls back to the stock
+tray icon.
+
+## Releasing
+
+Releases are built and packaged locally into `target\`. No GitHub Actions or
+remote publishing is used.
+
+The release build uses the GNU target with the WinLibs MinGW-w64 toolchain. If it
+is not installed:
+
+```powershell
+winget install BrechtSanders.WinLibs.POSIX.UCRT
+```
+
+Open a new shell and put WinLibs first on `PATH` before building:
+
+```powershell
+$mingw = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Directory `
+  -Filter 'BrechtSanders.WinLibs*' |
+  ForEach-Object { Join-Path $_.FullName 'mingw64\bin' } |
+  Select-Object -First 1
+$env:PATH = "$mingw;$env:PATH"
+```
+
+1. Run the manual validation checklist below, then update the package version in
+   `Cargo.toml` (for example, `0.2.0`) and refresh `Cargo.lock`:
+
+   ```powershell
+   cargo +stable-x86_64-pc-windows-gnu check
+   ```
+
+2. Run the tests:
+
+   ```powershell
+   cargo +stable-x86_64-pc-windows-gnu test
+   ```
+
+3. Build the release and create the distributable zip:
+
+   ```powershell
+   $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+
+   cargo +stable-x86_64-pc-windows-gnu build --release
+
+   $zip = "target\d2r-load-remover-v$version-windows-x64.zip"
+   Remove-Item $zip -ErrorAction SilentlyContinue
+   Compress-Archive -Path target\release\d2r-load-remover.exe, README.md, LICENSE `
+     -DestinationPath $zip
+
+   (Get-Item target\release\d2r-load-remover.exe).VersionInfo.FileVersion
+   Get-FileHash $zip -Algorithm SHA256
+   ```
+
+   `FileVersion` should match the version in `Cargo.toml`. If it is empty, the
+   icon/version resources were not embedded; check that WinLibs is on `PATH`.
+
+4. Commit the version bump and tag the release locally:
+
+   ```powershell
+   git add Cargo.toml Cargo.lock
+   git commit -m "Release v$version"
+   git tag "v$version"
+   ```
+
+The local release artifacts are:
+
+- `target\release\d2r-load-remover.exe`
+- `target\d2r-load-remover-v<version>-windows-x64.zip`
+
+The zip contains the executable, `README.md`, and `LICENSE`.
 
 ## Automated tests
 
@@ -207,7 +279,7 @@ src/
   livesplit/             reconnecting client and state machine
   transport/             named pipe, TCP, WebSocket
   settings_dialog.rs     native Win32 dialog
-  tray.rs, hotkeys.rs, logging.rs, state.rs
+  tray.rs, state.rs
 test/                    detector fixtures
 assets/                  icon and manifest
 ```

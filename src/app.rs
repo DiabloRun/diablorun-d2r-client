@@ -7,28 +7,27 @@ use std::sync::Arc;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::SetActiveWindow;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW,
-    GetWindowLongPtrW, KillTimer, PostMessageW, PostQuitMessage, RegisterClassExW, SetTimer,
-    SetWindowLongPtrW, TranslateMessage, GWLP_USERDATA, SW_SHOWNORMAL, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_TIMER, WNDCLASSEXW,
+    BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    FindWindowW, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, MessageBoxW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
+    ShowWindow, TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_OK, SW_SHOWNORMAL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_TIMER, WNDCLASSEXW,
 };
 
 use crate::config::{self, Config};
-use crate::hotkeys;
-use crate::logging;
 use crate::settings_dialog;
 use crate::state::SharedState;
 use crate::transport;
 use crate::tray::{self, TrayIcon};
-use crate::{autostart, capture, livesplit};
+use crate::{capture, livesplit};
 
 const WINDOW_CLASS: PCWSTR = w!("D2RLoadRemoverMessageWindow");
 const WINDOW_TITLE: PCWSTR = w!("D2R Load Remover");
 const WM_APP_OPEN_SETTINGS: u32 = 0x8000 + 2;
 const WM_APP_SHUTDOWN: u32 = 0x8000 + 3;
-const HOTKEY_ID: i32 = 1;
 const TIMER_ID: usize = 1;
 
 static MESSAGE_WINDOW: AtomicIsize = AtomicIsize::new(0);
@@ -115,9 +114,8 @@ struct App {
     tray: Option<TrayIcon>,
     capture_thread: Option<std::thread::JoinHandle<()>>,
     livesplit_thread: Option<std::thread::JoinHandle<()>>,
-    hotkey_registered: bool,
     stopped: bool,
-    settings_open: bool,
+    settings_hwnd: Option<HWND>,
 }
 
 impl App {
@@ -132,9 +130,8 @@ impl App {
             tray: None,
             capture_thread: None,
             livesplit_thread: None,
-            hotkey_registered: false,
             stopped: false,
-            settings_open: false,
+            settings_hwnd: None,
         }
     }
 
@@ -146,7 +143,10 @@ impl App {
             .spawn(move || capture::run(capture_shared, save_frames))
         {
             Ok(thread) => self.capture_thread = Some(thread),
-            Err(error) => log_error!("Could not start capture thread: {error}"),
+            Err(error) => show_error_message(
+                self.hwnd,
+                &format!("Could not start capture thread: {error}"),
+            ),
         }
 
         let livesplit_shared = self.shared.clone();
@@ -157,7 +157,10 @@ impl App {
             .spawn(move || livesplit::run(livesplit_shared, connector))
         {
             Ok(thread) => self.livesplit_thread = Some(thread),
-            Err(error) => log_error!("Could not start LiveSplit thread: {error}"),
+            Err(error) => show_error_message(
+                self.hwnd,
+                &format!("Could not start LiveSplit thread: {error}"),
+            ),
         }
 
         if !self.options.no_tray {
@@ -166,7 +169,6 @@ impl App {
             self.tray = Some(tray);
         }
 
-        self.apply_hotkey();
         unsafe {
             let _ = SetTimer(Some(self.hwnd), TIMER_ID, 500, None);
         }
@@ -177,13 +179,13 @@ impl App {
             return;
         }
         self.stopped = true;
+        self.close_settings();
         self.shared.request_shutdown();
         self.shared.notify_all();
 
         if let Some(tray) = self.tray.as_mut() {
             tray.remove();
         }
-        self.unregister_hotkey();
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_ID);
         }
@@ -196,77 +198,64 @@ impl App {
         }
     }
 
-    fn apply_hotkey(&mut self) {
-        self.unregister_hotkey();
-        if self.config.hotkeys.toggle.trim().is_empty() {
-            return;
-        }
-
-        match hotkeys::parse_hotkey(&self.config.hotkeys.toggle) {
-            Ok(hotkey) => match hotkeys::register(self.hwnd, HOTKEY_ID, hotkey) {
-                Ok(()) => {
-                    self.hotkey_registered = true;
-                    log_info!("Registered hotkey {}", self.config.hotkeys.toggle);
-                }
-                Err(error) => {
-                    log_warn!(
-                        "Could not register hotkey {}: {error}",
-                        self.config.hotkeys.toggle
-                    );
-                }
-            },
-            Err(error) => log_warn!("Invalid hotkey: {error}"),
-        }
-    }
-
-    fn unregister_hotkey(&mut self) {
-        if self.hotkey_registered {
-            hotkeys::unregister(self.hwnd, HOTKEY_ID);
-            self.hotkey_registered = false;
-        }
-    }
-
     fn toggle_enabled(&mut self) {
         let enabled = self.shared.toggle_enabled();
         self.config.enabled = enabled;
         self.save_config();
-        log_info!(
-            "Load removal {}",
-            if enabled { "enabled" } else { "disabled" }
-        );
         self.update_tooltip();
     }
 
     fn open_settings(&mut self) {
-        if self.settings_open {
-            return;
-        }
-        self.settings_open = true;
-        let result = settings_dialog::show(self.hwnd, &self.config);
-        self.settings_open = false;
-
-        if let Some(mut new_config) = result {
-            new_config.normalize();
-            if let Err(error) = new_config.validate() {
-                log_warn!("Rejected settings: {error}");
+        if let Some(hwnd) = self.settings_hwnd {
+            if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+                    let _ = BringWindowToTop(hwnd);
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = SetActiveWindow(hwnd);
+                }
                 return;
             }
-
-            let hotkey_changed = new_config.hotkeys.toggle != self.config.hotkeys.toggle;
-            self.shared.apply_settings(new_config.clone());
-            self.config = new_config;
-            self.save_config();
-            if hotkey_changed {
-                self.apply_hotkey();
-            }
-            log_info!("Settings applied");
-            self.update_tooltip();
+            self.settings_hwnd = None;
         }
+
+        match settings_dialog::open(self.hwnd, &self.config) {
+            Ok(hwnd) => self.settings_hwnd = Some(hwnd),
+            Err(error) => show_error_message(
+                self.hwnd,
+                &format!("Could not open the settings dialog: {error}"),
+            ),
+        }
+    }
+
+    fn close_settings(&mut self) {
+        if let Some(hwnd) = self.settings_hwnd.take() {
+            unsafe {
+                if IsWindow(Some(hwnd)).as_bool() {
+                    let _ = DestroyWindow(hwnd);
+                }
+            }
+        }
+    }
+
+    fn apply_settings(&mut self, mut new_config: Config) {
+        // Enable/disable is controlled from the tray menu only.
+        new_config.enabled = self.shared.enabled();
+        new_config.normalize();
+        if let Err(error) = new_config.validate() {
+            show_error_message(self.hwnd, &format!("Invalid settings: {error}"));
+            return;
+        }
+
+        self.shared.apply_settings(new_config.clone());
+        self.config = new_config;
+        self.save_config();
+        self.update_tooltip();
     }
 
     fn save_config(&self) {
         if let Err(error) = config::save_config(&self.config_path, &self.config) {
-            log_warn!("Could not save config: {error}");
+            show_error_message(self.hwnd, &format!("Could not save config: {error}"));
         }
     }
 
@@ -288,14 +277,9 @@ impl App {
                 SW_SHOWNORMAL,
             );
             if result.0 as isize <= 32 {
-                log_warn!("Could not open {}", path.display());
+                show_error_message(self.hwnd, &format!("Could not open {}", path.display()));
             }
         }
-    }
-
-    fn open_log(&self) {
-        let path = logging::log_path(&self.config_path);
-        self.open_path(&path);
     }
 
     fn open_config_folder(&self) {
@@ -307,28 +291,18 @@ impl App {
         self.open_path(&folder);
     }
 
-    fn toggle_autostart(&mut self) {
-        match autostart::toggle() {
-            Ok(enabled) => log_info!("Autostart {}", if enabled { "enabled" } else { "disabled" }),
-            Err(error) => log_warn!("Could not change autostart: {error}"),
-        }
-    }
-
     fn show_tray_menu(&mut self) {
         let Some(tray) = self.tray.as_ref() else {
             return;
         };
-        let command = tray.show_menu(self.shared.enabled(), autostart::is_enabled());
+        let command = tray.show_menu(self.shared.enabled());
         match command {
             tray::MENU_TOGGLE => self.toggle_enabled(),
             tray::MENU_SETTINGS => self.open_settings(),
             tray::MENU_RECONNECT => {
                 self.shared.request_reconnect();
-                log_info!("Reconnect requested");
             }
-            tray::MENU_OPEN_LOG => self.open_log(),
             tray::MENU_OPEN_CONFIG => self.open_config_folder(),
-            tray::MENU_AUTOSTART => self.toggle_autostart(),
             tray::MENU_QUIT => unsafe {
                 let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             },
@@ -365,17 +339,31 @@ unsafe extern "system" fn window_proc(
     if let Some(app) = app {
         if message == tray::TRAY_CALLBACK_MESSAGE {
             let event = (lparam.0 & 0xFFFF) as u32;
-            if event == 0x0205 || event == 0x0204 || event == 0x0202 {
-                // WM_RBUTTONUP / WM_RBUTTONDOWN / WM_LBUTTONUP
-                if !app.settings_open {
-                    app.show_tray_menu();
-                }
+            // WM_LBUTTONUP / WM_RBUTTONUP
+            if event == 0x0205 || event == 0x0202 {
+                app.show_tray_menu();
                 return LRESULT(0);
             }
         }
 
         if message == WM_APP_OPEN_SETTINGS {
             app.open_settings();
+            return LRESULT(0);
+        }
+
+        if message == settings_dialog::WM_APP_SETTINGS_SAVED {
+            let dialog = HWND(wparam.0 as *mut _);
+            if let Some(config) = settings_dialog::take_result(dialog) {
+                app.apply_settings(config);
+            }
+            return LRESULT(0);
+        }
+
+        if message == settings_dialog::WM_APP_SETTINGS_CLOSED {
+            let dialog = HWND(wparam.0 as *mut _);
+            if app.settings_hwnd == Some(dialog) {
+                app.settings_hwnd = None;
+            }
             return LRESULT(0);
         }
 
@@ -388,11 +376,6 @@ unsafe extern "system" fn window_proc(
 
         if message == WM_TIMER && wparam.0 == TIMER_ID {
             app.update_tooltip();
-            return LRESULT(0);
-        }
-
-        if message == WM_HOTKEY && wparam.0 as i32 == HOTKEY_ID && !app.settings_open {
-            app.toggle_enabled();
             return LRESULT(0);
         }
 
@@ -422,6 +405,18 @@ unsafe extern "system" fn window_proc(
     }
 
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+fn show_error_message(owner: HWND, message: &str) {
+    let wide: Vec<u16> = message.encode_utf16().chain([0]).collect();
+    unsafe {
+        let _ = MessageBoxW(
+            Some(owner),
+            PCWSTR(wide.as_ptr()),
+            w!("D2R Load Remover"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 pub fn post_shutdown_from_console() {
