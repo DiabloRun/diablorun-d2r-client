@@ -6,7 +6,8 @@ LiveSplit still handles the timing. This app just tells it when to pause.
 ## Quick start
 
 1. Start LiveSplit with a D2R layout that uses game time.
-2. Run `d2r-lrt-tracker.exe`.
+2. Run `d2r-lrt-tracker.exe`. The settings window opens on launch; adjust the
+   LiveSplit connection if needed, then close it to the tray.
 3. Start D2R. Loading screens pause game time automatically.
 
 The tray icon shows whether the game is being captured and whether LiveSplit is

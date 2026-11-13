@@ -172,6 +172,10 @@ impl App {
             unsafe {
                 let _ = SetTimer(Some(self.hwnd), TIMER_ID, 500, None);
             }
+
+            // Show the connection settings immediately on a normal launch.
+            // Headless `--no-tray` runs skip this along with the tray icon.
+            self.open_settings();
         }
     }
 

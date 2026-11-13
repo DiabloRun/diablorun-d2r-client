@@ -96,9 +96,10 @@ pipe reports **Access is denied**, LiveSplit is probably running elevated while
 the tracker is not. Run both at the same elevation, or restart LiveSplit without
 elevation. TCP and WebSocket are not affected by this named-pipe ACL difference.
 
-The tray menu opens a native settings dialog for the connection (transport,
-host, port, and WebSocket path). It follows the Windows light/dark app theme,
-has its own taskbar entry, and is brought to the foreground when opened.
+A native settings dialog for the connection (transport, host, port, and
+WebSocket path) opens on startup and from the tray menu. It follows the Windows
+light/dark app theme, has its own taskbar entry, and is brought to the
+foreground when opened.
 **Save** applies immediately without closing the dialog: the LiveSplit
 connection is re-established without restarting the app. **Close to tray**
 dismisses the settings window. Test connection uses the values currently in the
