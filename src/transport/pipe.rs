@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn exchanges_commands_over_a_named_pipe() {
-        let name = format!(r"\\.\pipe\d2r-load-remover-test-{}", std::process::id());
+        let name = format!(r"\\.\pipe\d2r-lrt-tracker-test-{}", std::process::id());
         let _server = start_server(&name, "pong\n");
 
         let mut connection =

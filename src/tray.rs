@@ -11,16 +11,14 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, PostMessageW,
-    SetForegroundWindow, TrackPopupMenu, HICON, MF_CHECKED, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD,
+    SetForegroundWindow, TrackPopupMenu, HICON, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, WM_NULL,
 };
 
 pub const TRAY_CALLBACK_MESSAGE: u32 = 0x0400 + 1;
 
-pub const MENU_TOGGLE: usize = 101;
 pub const MENU_SETTINGS: usize = 102;
 pub const MENU_RECONNECT: usize = 103;
-pub const MENU_OPEN_CONFIG: usize = 104;
 pub const MENU_QUIT: usize = 105;
 
 pub struct TrayIcon {
@@ -108,27 +106,16 @@ impl TrayIcon {
     }
 
     /// Show the tray menu at the cursor. Returns the chosen command id, or 0.
-    pub fn show_menu(&self, enabled: bool) -> usize {
+    pub fn show_menu(&self) -> usize {
         unsafe {
             let menu = match CreatePopupMenu() {
                 Ok(menu) => menu,
                 Err(_) => return 0,
             };
 
-            let toggle_text = if enabled {
-                "Disable load removal"
-            } else {
-                "Enable load removal"
-            };
-            let mut flags = MF_STRING;
-            if enabled {
-                flags |= MF_CHECKED;
-            }
-            append_dynamic(menu, flags, MENU_TOGGLE, toggle_text);
-            let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
             let _ = AppendMenuW(menu, MF_STRING, MENU_RECONNECT, w!("Reconnect LiveSplit"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_CONFIG, w!("Open config folder"));
+            let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit"));
 
@@ -153,18 +140,6 @@ impl TrayIcon {
             let _ = DestroyMenu(menu);
             command
         }
-    }
-}
-
-fn append_dynamic(
-    menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
-    flags: windows::Win32::UI::WindowsAndMessaging::MENU_ITEM_FLAGS,
-    id: usize,
-    text: &str,
-) {
-    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    unsafe {
-        let _ = AppendMenuW(menu, flags, id, PCWSTR(wide.as_ptr()));
     }
 }
 

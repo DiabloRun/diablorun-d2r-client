@@ -124,13 +124,7 @@ impl SharedState {
         }
     }
 
-    pub fn enabled(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .enabled
-    }
-
+    #[cfg(test)]
     pub fn set_enabled(&self, enabled: bool) {
         let mut inner = self
             .inner
@@ -149,12 +143,6 @@ impl SharedState {
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();
-    }
-
-    pub fn toggle_enabled(&self) -> bool {
-        let enabled = self.enabled();
-        self.set_enabled(!enabled);
-        !enabled
     }
 
     pub fn set_desired_paused(&self, paused: bool) {

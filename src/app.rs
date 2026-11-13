@@ -1,6 +1,6 @@
 //! UI thread, tray integration, lifecycle, and wiring between workers.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 
@@ -8,7 +8,6 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetActiveWindow;
-use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     FindWindowW, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, MessageBoxW, PostMessageW,
@@ -24,8 +23,8 @@ use crate::transport;
 use crate::tray::{self, TrayIcon};
 use crate::{capture, livesplit};
 
-const WINDOW_CLASS: PCWSTR = w!("D2RLoadRemoverMessageWindow");
-const WINDOW_TITLE: PCWSTR = w!("D2R Load Remover");
+const WINDOW_CLASS: PCWSTR = w!("D2RLrtTrackerMessageWindow");
+const WINDOW_TITLE: PCWSTR = w!("D2R LRT Tracker");
 const WM_APP_OPEN_SETTINGS: u32 = 0x8000 + 2;
 const WM_APP_SHUTDOWN: u32 = 0x8000 + 3;
 const TIMER_ID: usize = 1;
@@ -41,7 +40,7 @@ pub fn run(config: Config, config_path: PathBuf, options: Options) -> Result<(),
     let instance = unsafe { GetModuleHandleW(None) }.map_err(|error| error.to_string())?;
     let instance = HINSTANCE(instance.0);
 
-    let window_class: Vec<u16> = "D2RLoadRemoverMessageWindow"
+    let window_class: Vec<u16> = "D2RLrtTrackerMessageWindow"
         .encode_utf16()
         .chain([0])
         .collect();
@@ -198,13 +197,6 @@ impl App {
         }
     }
 
-    fn toggle_enabled(&mut self) {
-        let enabled = self.shared.toggle_enabled();
-        self.config.enabled = enabled;
-        self.save_config();
-        self.update_tooltip();
-    }
-
     fn open_settings(&mut self) {
         if let Some(hwnd) = self.settings_hwnd {
             if unsafe { IsWindow(Some(hwnd)).as_bool() } {
@@ -239,8 +231,8 @@ impl App {
     }
 
     fn apply_settings(&mut self, mut new_config: Config) {
-        // Enable/disable is controlled from the tray menu only.
-        new_config.enabled = self.shared.enabled();
+        // The tracker is always enabled while the app is running.
+        new_config.enabled = true;
         new_config.normalize();
         if let Err(error) = new_config.validate() {
             show_error_message(self.hwnd, &format!("Invalid settings: {error}"));
@@ -265,44 +257,16 @@ impl App {
         }
     }
 
-    fn open_path(&self, path: &Path) {
-        let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain([0]).collect();
-        unsafe {
-            let result = ShellExecuteW(
-                None,
-                w!("open"),
-                PCWSTR(wide.as_ptr()),
-                None,
-                None,
-                SW_SHOWNORMAL,
-            );
-            if result.0 as isize <= 32 {
-                show_error_message(self.hwnd, &format!("Could not open {}", path.display()));
-            }
-        }
-    }
-
-    fn open_config_folder(&self) {
-        let folder = self
-            .config_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        self.open_path(&folder);
-    }
-
     fn show_tray_menu(&mut self) {
         let Some(tray) = self.tray.as_ref() else {
             return;
         };
-        let command = tray.show_menu(self.shared.enabled());
+        let command = tray.show_menu();
         match command {
-            tray::MENU_TOGGLE => self.toggle_enabled(),
             tray::MENU_SETTINGS => self.open_settings(),
             tray::MENU_RECONNECT => {
                 self.shared.request_reconnect();
             }
-            tray::MENU_OPEN_CONFIG => self.open_config_folder(),
             tray::MENU_QUIT => unsafe {
                 let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             },
@@ -413,7 +377,7 @@ fn show_error_message(owner: HWND, message: &str) {
         let _ = MessageBoxW(
             Some(owner),
             PCWSTR(wide.as_ptr()),
-            w!("D2R Load Remover"),
+            w!("D2R LRT Tracker"),
             MB_OK | MB_ICONERROR,
         );
     }

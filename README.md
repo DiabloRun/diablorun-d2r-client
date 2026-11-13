@@ -1,4 +1,4 @@
-# D2R Load Remover
+# D2R LRT Tracker
 
 A small, portable Windows app that watches **Diablo II: Resurrected** and pauses
 LiveSplit's game time while the game is loading. LiveSplit remains the timer;
@@ -15,11 +15,10 @@ this app only drives its game-time pause state.
 ## Quick start
 
 1. Start LiveSplit and load a D2R split layout that uses game time.
-2. Run `d2r-load-remover.exe`.
+2. Run `d2r-lrt-tracker.exe`.
 3. Start D2R. The tray tooltip shows whether the game window is being captured
    and whether LiveSplit is connected.
-4. Loads are paused automatically. Use the tray menu to enable or disable load
-   removal.
+4. Loads are paused automatically while the app is running.
 
 If LiveSplit is not running yet, the app waits and reconnects every two seconds.
 Commands are only sent when the desired state changes; on reconnect the current
@@ -74,7 +73,7 @@ frame dump instead:
 
 ```powershell
 # Start a load-removal run and trigger several loads while this is running.
-.\d2r-load-remover.exe --save-frames C:\temp\d2r-frames
+.\d2r-lrt-tracker.exe --save-frames C:\temp\d2r-frames
 ```
 
 Every captured frame is written as a tight RGBA buffer at the detector's 160-px
@@ -85,7 +84,7 @@ Stop the app after the load sequence.
 Then replay the dump through the same detector without LiveSplit or D2R:
 
 ```powershell
-.\d2r-load-remover.exe --replay-frames C:\temp\d2r-frames
+.\d2r-lrt-tracker.exe --replay-frames C:\temp\d2r-frames
 ```
 
 The replay prints every state transition and the first frame classified as
@@ -100,16 +99,17 @@ old dumps when finished. Capture and detection always run at 60 FPS.
 
 ## Settings
 
-The tray menu opens a native Win32 settings dialog for the LiveSplit connection
-(transport, host, port, WebSocket path, and reconnect delay). Enable/disable load
-removal is available from the tray menu. The settings window has its own taskbar
-entry and is brought to the foreground when opened. Capture FPS is fixed at 60.
-**Save & Close** applies immediately: the LiveSplit connection is re-established
-and detection settings are applied without restarting the app. Test connection
-uses the values currently in the dialog and a 1.5-second timeout.
+The tray menu opens a native Win32 settings dialog that follows the Windows
+light/dark app theme for the LiveSplit connection
+(transport, host, port, and WebSocket path). The settings window has its own taskbar
+entry and is brought to the foreground when opened.
+**Save** applies immediately without closing the dialog: the LiveSplit connection
+is re-established and detection settings are applied without restarting the app.
+**Close to tray** dismisses the settings window. Test connection uses the values
+currently in the dialog and a 1.5-second timeout.
 
 Configuration is portable: if `config.json` exists next to the executable it is
-used, otherwise `%APPDATA%\diablorun-d2r-load-remover\config.json` is used.
+used, otherwise `%APPDATA%\d2r-lrt-tracker\config.json` is used.
 During normal operation, `config.json` is the only file the app writes.
 
 ## Command line
@@ -157,7 +157,7 @@ cargo +stable-x86_64-pc-windows-gnu build --release
 cargo +stable-x86_64-pc-windows-gnu test
 ```
 
-The resulting `target\release\d2r-load-remover.exe` is self-contained. Resource
+The resulting `target\release\d2r-lrt-tracker.exe` is self-contained. Resource
 embedding (icon and version info) uses `winresource` and requires `windres` from
 WinLibs on `PATH`; without it the app still builds but falls back to the stock
 tray icon.
@@ -204,12 +204,12 @@ $env:PATH = "$mingw;$env:PATH"
 
    cargo +stable-x86_64-pc-windows-gnu build --release
 
-   $zip = "target\d2r-load-remover-v$version-windows-x64.zip"
+   $zip = "target\d2r-lrt-tracker-v$version-windows-x64.zip"
    Remove-Item $zip -ErrorAction SilentlyContinue
-   Compress-Archive -Path target\release\d2r-load-remover.exe, README.md, LICENSE `
+   Compress-Archive -Path target\release\d2r-lrt-tracker.exe, README.md, LICENSE `
      -DestinationPath $zip
 
-   (Get-Item target\release\d2r-load-remover.exe).VersionInfo.FileVersion
+   (Get-Item target\release\d2r-lrt-tracker.exe).VersionInfo.FileVersion
    Get-FileHash $zip -Algorithm SHA256
    ```
 
@@ -226,8 +226,8 @@ $env:PATH = "$mingw;$env:PATH"
 
 The local release artifacts are:
 
-- `target\release\d2r-load-remover.exe`
-- `target\d2r-load-remover-v<version>-windows-x64.zip`
+- `target\release\d2r-lrt-tracker.exe`
+- `target\d2r-lrt-tracker-v<version>-windows-x64.zip`
 
 The zip contains the executable, `README.md`, and `LICENSE`.
 
@@ -279,6 +279,7 @@ src/
   livesplit/             reconnecting client and state machine
   transport/             named pipe, TCP, WebSocket
   settings_dialog.rs     native Win32 dialog
+  theme.rs               Windows light/dark mode support
   tray.rs, state.rs
 test/                    detector fixtures
 assets/                  icon and manifest

@@ -118,7 +118,6 @@ pub struct LiveSplitConfig {
     pub host: String,
     pub port: u32,
     pub websocket_path: String,
-    pub reconnect_ms: u64,
     pub precision_correction: bool,
 }
 
@@ -129,7 +128,6 @@ impl Default for LiveSplitConfig {
             host: "127.0.0.1".into(),
             port: 16834,
             websocket_path: "/livesplit".into(),
-            reconnect_ms: 2000,
             precision_correction: false,
         }
     }
@@ -163,7 +161,7 @@ pub fn resolve_config_path_from(exe_dir: &Path, appdata: Option<std::ffi::OsStri
 
 fn roaming_config_dir_from(appdata: Option<std::ffi::OsString>) -> PathBuf {
     if let Some(appdata) = appdata {
-        PathBuf::from(appdata).join("diablorun-d2r-load-remover")
+        PathBuf::from(appdata).join("d2r-lrt-tracker")
     } else {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     }
@@ -250,6 +248,9 @@ impl Config {
     pub fn normalize(&mut self) {
         let defaults = Self::default();
 
+        // The tracker runs enabled for as long as the app is running.
+        self.enabled = true;
+
         self.capture.min_width = clamp(self.capture.min_width, 1, 16384);
         self.capture.min_height = clamp(self.capture.min_height, 1, 16384);
         if self.capture.process.trim().is_empty() {
@@ -273,7 +274,6 @@ impl Config {
         } else if !self.livesplit.websocket_path.starts_with('/') {
             self.livesplit.websocket_path = format!("/{}", self.livesplit.websocket_path.trim());
         }
-        self.livesplit.reconnect_ms = clamp(self.livesplit.reconnect_ms, 100, 60_000);
     }
 
     /// Validate settings entered in the dialog. `normalize` is deliberately not
@@ -290,9 +290,6 @@ impl Config {
 
         if self.livesplit.port == 0 || self.livesplit.port > 65535 {
             return Err("Port must be between 1 and 65535.".into());
-        }
-        if self.livesplit.reconnect_ms < 100 || self.livesplit.reconnect_ms > 60_000 {
-            return Err("Reconnect must be between 100 and 60000 ms.".into());
         }
         if self.livesplit.transport == TransportKind::WebSocket
             && !self.livesplit.websocket_path.starts_with('/')
@@ -360,7 +357,7 @@ mod tests {
         )
         .expect("parse config");
 
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert_eq!(config.capture.min_width, 320);
         assert_eq!(config.capture.process, "D2R.exe");
         assert_eq!(config.livesplit.transport, TransportKind::Tcp);
@@ -391,12 +388,10 @@ mod tests {
         let mut config = Config::default();
         config.capture.min_width = 0;
         config.detection.confirm_frames = 99;
-        config.livesplit.reconnect_ms = 1;
         config.normalize();
 
         assert_eq!(config.capture.min_width, 1);
         assert_eq!(config.detection.confirm_frames, 10);
-        assert_eq!(config.livesplit.reconnect_ms, 100);
     }
 
     #[test]
@@ -430,7 +425,7 @@ mod tests {
     #[test]
     fn saves_and_loads_round_trip() {
         let dir = std::env::temp_dir().join(format!(
-            "d2r-load-remover-config-test-{}",
+            "d2r-lrt-tracker-config-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
@@ -451,7 +446,7 @@ mod tests {
     #[test]
     fn portable_config_wins_when_present() {
         let root = std::env::temp_dir().join(format!(
-            "d2r-load-remover-portable-test-{}",
+            "d2r-lrt-tracker-portable-test-{}",
             std::process::id()
         ));
         let exe_dir = root.join("app");
@@ -463,9 +458,7 @@ mod tests {
         let fallback = resolve_config_path_from(&exe_dir, Some(appdata.clone().into_os_string()));
         assert_eq!(
             fallback,
-            appdata
-                .join("diablorun-d2r-load-remover")
-                .join("config.json")
+            appdata.join("d2r-lrt-tracker").join("config.json")
         );
 
         fs::write(exe_dir.join("config.json"), "{}").expect("write portable config");

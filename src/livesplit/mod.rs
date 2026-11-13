@@ -14,6 +14,7 @@ use crate::state::{LiveSplitStatus, SharedState};
 use crate::transport::Connection;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const RECONNECT_DELAY: Duration = Duration::from_millis(2000);
 const PHASE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// While game time is paused for a load, poll more often so a timer started or
 /// reset during the load is noticed quickly.
@@ -192,12 +193,11 @@ fn mark_disconnected(
     shared: &SharedState,
     controller: &mut Controller,
     next_retry: &mut Instant,
-    reconnect_ms: u64,
     error: io::Error,
 ) {
     controller.disconnect();
     shared.set_livesplit_status(LiveSplitStatus::Disconnected, error.to_string());
-    *next_retry = Instant::now() + Duration::from_millis(reconnect_ms);
+    *next_retry = Instant::now() + RECONNECT_DELAY;
 }
 
 pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
@@ -231,7 +231,6 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
         }
 
         let mut desired = snapshot.enabled && snapshot.desired_paused;
-        let reconnect_ms = snapshot.settings.livesplit.reconnect_ms;
 
         if !controller.is_connected() {
             // Transitions cannot be applied while disconnected. The latest
@@ -258,7 +257,7 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                             LiveSplitStatus::Disconnected,
                             format!("{}: {error}", controller.transport_name()),
                         );
-                        next_retry = Instant::now() + Duration::from_millis(reconnect_ms);
+                        next_retry = Instant::now() + RECONNECT_DELAY;
                     }
                 }
             }
@@ -278,13 +277,7 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                     break;
                 }
                 if let Err(error) = controller.send_desired(transition.paused) {
-                    mark_disconnected(
-                        &shared,
-                        &mut controller,
-                        &mut next_retry,
-                        reconnect_ms,
-                        error,
-                    );
+                    mark_disconnected(&shared, &mut controller, &mut next_retry, error);
                     break;
                 }
             }
@@ -294,13 +287,7 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
             // reconnect.
             if controller.is_connected() {
                 if let Err(error) = controller.send_desired(desired) {
-                    mark_disconnected(
-                        &shared,
-                        &mut controller,
-                        &mut next_retry,
-                        reconnect_ms,
-                        error,
-                    );
+                    mark_disconnected(&shared, &mut controller, &mut next_retry, error);
                 }
             }
 
@@ -317,13 +304,9 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                             ),
                         );
                     }
-                    Err(error) => mark_disconnected(
-                        &shared,
-                        &mut controller,
-                        &mut next_retry,
-                        reconnect_ms,
-                        error,
-                    ),
+                    Err(error) => {
+                        mark_disconnected(&shared, &mut controller, &mut next_retry, error)
+                    }
                 }
             }
         }

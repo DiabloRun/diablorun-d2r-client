@@ -1,8 +1,8 @@
 [package]
-name = "d2r-load-remover"
+name = "d2r-lrt-tracker"
 version = "0.2.0"
 edition = "2021"
-description = "D2R load remover for LiveSplit"
+description = "D2R LRT Tracker for LiveSplit"
 license = "MIT"
 build = "build.rs"
 

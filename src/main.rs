@@ -10,6 +10,7 @@ mod livesplit;
 mod replay;
 mod settings_dialog;
 mod state;
+mod theme;
 mod transport;
 mod tray;
 
@@ -33,7 +34,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-const MUTEX_NAME: PCWSTR = w!("Local\\diablorun-d2r-load-remover");
+const MUTEX_NAME: PCWSTR = w!("Local\\d2r-lrt-tracker");
 
 struct Cli {
     no_tray: bool,
@@ -80,6 +81,7 @@ fn run() -> Result<(), String> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
+    theme::init();
 
     let loaded = config::load_config();
     let config_path = loaded.path.clone();
@@ -149,7 +151,7 @@ fn parse_args() -> Result<Cli, String> {
                 std::process::exit(0);
             }
             "--version" => {
-                println!("d2r-load-remover {}", env!("CARGO_PKG_VERSION"));
+                println!("d2r-lrt-tracker {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -162,8 +164,8 @@ fn parse_args() -> Result<Cli, String> {
 fn print_usage() {
     println!(
         concat!(
-            "d2r-load-remover {}\n\n",
-            "Usage: d2r-load-remover [options]\n\n",
+            "d2r-lrt-tracker {}\n\n",
+            "Usage: d2r-lrt-tracker [options]\n\n",
             "Options:\n",
             "  --console              Attach a console for development output\n",
             "  --save-frames <dir>    Dump raw detector frames for fixture creation\n",
@@ -236,7 +238,7 @@ fn show_startup_error(message: &str) {
         let _ = MessageBoxW(
             None,
             PCWSTR(wide.as_ptr()),
-            w!("D2R Load Remover"),
+            w!("D2R LRT Tracker"),
             MB_OK | MB_ICONERROR,
         );
     }

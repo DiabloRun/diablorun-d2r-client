@@ -80,7 +80,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "d2r-load-remover"
+name = "d2r-lrt-tracker"
 version = "0.2.0"
 dependencies = [
  "png",

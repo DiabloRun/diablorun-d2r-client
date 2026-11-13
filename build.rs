@@ -8,16 +8,15 @@ fn main() {
 
     let mut resource = winresource::WindowsResource::new();
     resource.set_icon("assets/icon.ico");
-    // Rust's GNU linker already supplies a default manifest; embedding a second
-    // one only produces an ld merge warning. The MSVC release build (the one we
-    // ship) gets the real manifest here. The GNU build still sets per-monitor
-    // DPI awareness at runtime.
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        resource.set_manifest_file("assets/app.manifest");
-    }
-    resource.set("ProductName", "D2R Load Remover");
-    resource.set("FileDescription", "D2R Load Remover for LiveSplit");
-    resource.set("OriginalFilename", "d2r-load-remover.exe");
+    // The release build is normally the GNU target, which otherwise ships
+    // Rust's minimal default manifest. Embed the real manifest so the app gets
+    // per-monitor DPI awareness and themed common controls. WinLibs/ld may warn
+    // about multiple non-default manifests because it also links its own
+    // default-manifest.o; the custom manifest still wins.
+    resource.set_manifest_file("assets/app.manifest");
+    resource.set("ProductName", "D2R LRT Tracker");
+    resource.set("FileDescription", "D2R LRT Tracker for LiveSplit");
+    resource.set("OriginalFilename", "d2r-lrt-tracker.exe");
 
     if let Err(error) = resource.compile() {
         // Resource embedding is a packaging concern; never fail a code build
