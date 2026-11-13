@@ -1,0 +1,191 @@
+//! Tray icon, menu, and Explorer-restart handling.
+
+use std::mem::size_of;
+
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, PostMessageW,
+    SetForegroundWindow, TrackPopupMenu, HICON, MF_CHECKED, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_NULL,
+};
+
+pub const TRAY_CALLBACK_MESSAGE: u32 = 0x0400 + 1;
+
+pub const MENU_TOGGLE: usize = 101;
+pub const MENU_SETTINGS: usize = 102;
+pub const MENU_RECONNECT: usize = 103;
+pub const MENU_OPEN_LOG: usize = 104;
+pub const MENU_OPEN_CONFIG: usize = 105;
+pub const MENU_AUTOSTART: usize = 106;
+pub const MENU_QUIT: usize = 107;
+
+pub struct TrayIcon {
+    hwnd: HWND,
+    icon: HICON,
+    added: bool,
+    taskbar_created_message: u32,
+}
+
+impl TrayIcon {
+    pub fn new(hwnd: HWND) -> Self {
+        let icon = unsafe {
+            let module = GetModuleHandleW(None).unwrap_or_default();
+            let instance = HINSTANCE(module.0);
+            LoadIconW(Some(instance), PCWSTR(1 as *const u16))
+                .or_else(|_| LoadIconW(None, PCWSTR(32512 as *const u16))) // IDI_APPLICATION
+                .unwrap_or_default()
+        };
+        if icon.is_invalid() {
+            log_warn!("Could not load the tray icon");
+        }
+
+        let taskbar_created_message = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(w!("TaskbarCreated"))
+        };
+
+        Self {
+            hwnd,
+            icon,
+            added: false,
+            taskbar_created_message,
+        }
+    }
+
+    pub fn taskbar_created_message(&self) -> u32 {
+        self.taskbar_created_message
+    }
+
+    pub fn add(&mut self, tooltip: &str) {
+        let mut data = self.data(tooltip);
+        let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
+        if !added {
+            log_warn!("Could not add the tray icon");
+        }
+        self.added = true;
+        data.uFlags = NIF_TIP;
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+        }
+    }
+
+    pub fn recreate(&mut self, tooltip: &str) {
+        self.added = false;
+        self.add(tooltip);
+    }
+
+    pub fn set_tooltip(&mut self, tooltip: &str) {
+        if !self.added {
+            return;
+        }
+        let mut data = self.data(tooltip);
+        data.uFlags = NIF_TIP;
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+        }
+    }
+
+    pub fn remove(&mut self) {
+        if self.added {
+            let data = self.data("");
+            unsafe {
+                let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+            }
+            self.added = false;
+        }
+    }
+
+    fn data(&self, tooltip: &str) -> NOTIFYICONDATAW {
+        let mut data = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: 1,
+            uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+            uCallbackMessage: TRAY_CALLBACK_MESSAGE,
+            hIcon: self.icon,
+            ..Default::default()
+        };
+
+        let encoded: Vec<u16> = tooltip.encode_utf16().take(127).collect();
+        data.szTip[..encoded.len()].copy_from_slice(&encoded);
+        data
+    }
+
+    /// Show the tray menu at the cursor. Returns the chosen command id, or 0.
+    pub fn show_menu(&self, enabled: bool, autostart: bool) -> usize {
+        unsafe {
+            let menu = match CreatePopupMenu() {
+                Ok(menu) => menu,
+                Err(_) => return 0,
+            };
+
+            let toggle_text = if enabled {
+                "Disable load removal"
+            } else {
+                "Enable load removal"
+            };
+            let mut flags = MF_STRING;
+            if enabled {
+                flags |= MF_CHECKED;
+            }
+            append_dynamic(menu, flags, MENU_TOGGLE, toggle_text);
+            let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
+            let _ = AppendMenuW(menu, MF_STRING, MENU_RECONNECT, w!("Reconnect LiveSplit"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_LOG, w!("Open log"));
+            let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_CONFIG, w!("Open config folder"));
+            let autostart_flags = if autostart {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            let _ = AppendMenuW(menu, autostart_flags, MENU_AUTOSTART, w!("Autostart"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit"));
+
+            let mut point = POINT::default();
+            if GetCursorPos(&mut point).is_err() {
+                let _ = DestroyMenu(menu);
+                return 0;
+            }
+
+            let _ = SetForegroundWindow(self.hwnd);
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                point.x,
+                point.y,
+                None,
+                self.hwnd,
+                None,
+            )
+            .0 as usize;
+            let _ = PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+            let _ = DestroyMenu(menu);
+            command
+        }
+    }
+}
+
+fn append_dynamic(
+    menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+    flags: windows::Win32::UI::WindowsAndMessaging::MENU_ITEM_FLAGS,
+    id: usize,
+    text: &str,
+) {
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    unsafe {
+        let _ = AppendMenuW(menu, flags, id, PCWSTR(wide.as_ptr()));
+    }
+}
+
+impl Drop for TrayIcon {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}

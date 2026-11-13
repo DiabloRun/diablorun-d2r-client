@@ -1,0 +1,59 @@
+[package]
+name = "d2r-load-remover"
+version = "0.1.0"
+edition = "2021"
+description = "D2R load remover for LiveSplit"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Foundation",
+] }
+
+[dev-dependencies]
+png = "0.18"
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1

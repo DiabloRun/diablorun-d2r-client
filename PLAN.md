@@ -1,6 +1,8 @@
 # D2R Load Remover for LiveSplit (Windows, Rust) — Plan
 
-Status: draft for review. Nothing below is implemented yet.
+Status: implemented on the `windows-rust` branch. Automated tests cover the
+detector, config, protocol, state machine, and all three transports. The manual
+display-mode matrix remains the release sign-off step.
 
 ## 1. Goal
 
@@ -272,6 +274,10 @@ depending on where the transition falls relative to presented frames). This is
 better than the old Electron client's 50 ms polling loop.
 
 Optional `precisionCorrection` (default **off**):
+
+> Current Windows build: reserved and default-off. The app does not mutate
+> LiveSplit's current game time yet; enable only after measuring overshoot on
+> recorded video.
 
 - After sending `pausegametime`, read `getcurrentgametime` and compare with the
   expected value at the frame timestamp.
