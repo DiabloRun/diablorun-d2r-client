@@ -9,7 +9,6 @@ use super::Connection;
 pub struct TcpConnection {
     stream: TcpStream,
     reader: BufReader<TcpStream>,
-    timeout: Duration,
 }
 
 impl TcpConnection {
@@ -24,11 +23,7 @@ impl TcpConnection {
                     stream.set_write_timeout(Some(timeout))?;
                     stream.set_nodelay(true)?;
                     let reader = BufReader::new(stream.try_clone()?);
-                    return Ok(Self {
-                        stream,
-                        reader,
-                        timeout,
-                    });
+                    return Ok(Self { stream, reader });
                 }
                 Err(error) => last_error = Some(error),
             }
@@ -64,7 +59,6 @@ impl Connection for TcpConnection {
     }
 
     fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.timeout = timeout;
         self.stream.set_read_timeout(Some(timeout))?;
         self.stream.set_write_timeout(Some(timeout))
     }

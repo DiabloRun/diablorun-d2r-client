@@ -4,10 +4,6 @@
 //! It deliberately has no Windows or GPU dependencies so it can be unit tested
 //! with plain RGB/RGBA buffers.
 
-/// Smallest frame dimension considered by the detector.
-#[allow(dead_code)]
-pub const MIN_IMAGE_SIZE: usize = 160;
-
 /// Pixels at or below this channel value are treated as background black.
 const BLACK_LEVEL: u8 = 20;
 
@@ -26,11 +22,12 @@ const MIN_AVERAGE_BORDER_COVERAGE: f32 = 0.8;
 /// The border as a whole must still look warm/golden, not white or blue.
 const MIN_BORDER_RED_BLUE_DELTA: i32 = 3;
 
-/// The loading screen must be black outside the frame (titlebar excluded).
-const MIN_BACKGROUND_BLACK_RATIO: f32 = 0.985;
+/// The loading screen must be at least 98.5% black outside the frame
+/// (titlebar excluded), i.e. at most 15 non-black pixels per thousand.
+const MAX_BACKGROUND_NON_BLACK_PER_THOUSAND: usize = 15;
 
-/// The bottom-right logo screen is almost entirely black.
-const MAX_LOGO_NON_BLACK_RATIO: f32 = 0.02;
+/// The bottom-right logo screen is almost entirely black: at most 2%.
+const MAX_LOGO_NON_BLACK_PERCENT: usize = 2;
 
 /// Run the detector on a tightly packed RGBA frame (stride = 4).
 pub fn detect_loading(data: &[u8], width: usize, height: usize) -> bool {
@@ -89,7 +86,6 @@ struct Bounds {
 
 struct NonBlackScan {
     non_black: usize,
-    total: usize,
     bounds: Bounds,
 }
 
@@ -308,10 +304,22 @@ fn is_center_loading(frame: &Frame<'_>, content_top: usize, bounds: Bounds) -> b
         return false;
     }
 
-    has_frame_border(frame, bounds)
-        && (has_loading_artwork(frame, bounds)
-            || (has_early_loading_artwork(frame, bounds) && has_strong_frame_border(frame, bounds)))
-        && has_black_background(frame, content_top, bounds)
+    // The black background is the strongest in-game guard and can reject a
+    // gameplay frame after only a small fraction of the pixels have been read.
+    if !has_black_background(frame, content_top, bounds) {
+        return false;
+    }
+
+    let edges = border_stats(frame, bounds);
+    if !is_normal_border(&edges) {
+        return false;
+    }
+
+    let Some(artwork) = loading_artwork_stats(frame, bounds) else {
+        return false;
+    };
+
+    artwork.is_loading() || (artwork.is_early() && is_strong_border(&edges))
 }
 
 #[inline]
@@ -319,16 +327,15 @@ fn in_range(value: f32, min: f32, max: f32) -> bool {
     value >= min && value <= max
 }
 
-/// The loading frame has a continuous ornate border. Checking the whole border,
-/// rather than a few points, rejects gold-colored gameplay objects and dark UI
-/// panels that happen to line up with the frame geometry.
-fn has_frame_border(frame: &Frame<'_>, bounds: Bounds) -> bool {
+/// Collect the four edge samples once so the normal and strong border checks
+/// can share them.
+fn border_stats(frame: &Frame<'_>, bounds: Bounds) -> [EdgeBorderStats; 4] {
     let frame_width = bounds.right - bounds.left + 1;
     let frame_height = bounds.bottom - bounds.top + 1;
     let inset_x = 1.max((frame_width as f32 * 0.12).round() as usize);
     let inset_y = 1.max((frame_height as f32 * 0.12).round() as usize);
 
-    let edges = [
+    [
         edge_border_stats(
             frame,
             bounds.left,
@@ -361,8 +368,13 @@ fn has_frame_border(frame: &Frame<'_>, bounds: Bounds) -> bool {
             bounds.bottom,
             Axis::Y,
         ),
-    ];
+    ]
+}
 
+/// The loading frame has a continuous ornate border. Checking the whole border,
+/// rather than a few points, rejects gold-colored gameplay objects and dark UI
+/// panels that happen to line up with the frame geometry.
+fn is_normal_border(edges: &[EdgeBorderStats; 4]) -> bool {
     if edges
         .iter()
         .any(|edge| edge.coverage < MIN_EDGE_BORDER_COVERAGE)
@@ -387,6 +399,15 @@ fn has_frame_border(frame: &Frame<'_>, bounds: Bounds) -> bool {
     // The border is desaturated by ffmpeg in places, but the border as a whole
     // is still warm. This rejects white, blue, and green UI frames.
     red - blue >= MIN_BORDER_RED_BLUE_DELTA as f32 && red >= green * 0.95 && green >= blue
+}
+
+/// Stricter border check used only for early (dark-interior) door frames.
+fn is_strong_border(edges: &[EdgeBorderStats; 4]) -> bool {
+    if edges.iter().any(|edge| edge.coverage < 0.9) {
+        return false;
+    }
+
+    edges.iter().map(|edge| edge.coverage).sum::<f32>() / edges.len() as f32 >= 0.95
 }
 
 #[derive(Debug)]
@@ -507,6 +528,20 @@ struct ArtworkStats {
     warm_ratio: f32,
 }
 
+impl ArtworkStats {
+    /// Both loading artworks contain a large, bright, warm scene. A black or
+    /// cold UI panel inside a gold border should not pause the timer.
+    fn is_loading(&self) -> bool {
+        self.brightness >= 20.0 && self.bright_ratio >= 0.1 && self.warm_ratio >= 0.1
+    }
+
+    /// The first door frame is already a complete gold frame with the LOADING
+    /// text, but the doorway animation has not lit up yet.
+    fn is_early(&self) -> bool {
+        self.brightness >= 8.0 && self.bright_ratio >= 0.02 && self.warm_ratio >= 0.01
+    }
+}
+
 fn loading_artwork_stats(frame: &Frame<'_>, bounds: Bounds) -> Option<ArtworkStats> {
     let frame_width = bounds.right - bounds.left + 1;
     let frame_height = bounds.bottom - bounds.top + 1;
@@ -552,77 +587,6 @@ fn loading_artwork_stats(frame: &Frame<'_>, bounds: Bounds) -> Option<ArtworkSta
     })
 }
 
-fn has_loading_artwork(frame: &Frame<'_>, bounds: Bounds) -> bool {
-    let Some(stats) = loading_artwork_stats(frame, bounds) else {
-        return false;
-    };
-
-    // Both loading artworks contain a large, bright, warm scene. A black or
-    // cold UI panel inside a gold border should not pause the timer.
-    stats.brightness >= 20.0 && stats.bright_ratio >= 0.1 && stats.warm_ratio >= 0.1
-}
-
-/// The first door frame is already a complete gold frame with the LOADING text,
-/// but the doorway animation has not lit up yet. Accept it when the frame is
-/// nearly perfect and the screen outside is pure black; this is what makes the
-/// timer pause at the start of the load rather than after the animation.
-fn has_early_loading_artwork(frame: &Frame<'_>, bounds: Bounds) -> bool {
-    let Some(stats) = loading_artwork_stats(frame, bounds) else {
-        return false;
-    };
-
-    stats.brightness >= 8.0 && stats.bright_ratio >= 0.02 && stats.warm_ratio >= 0.01
-}
-
-/// Stricter border check used only for early (dark-interior) door frames.
-fn has_strong_frame_border(frame: &Frame<'_>, bounds: Bounds) -> bool {
-    let frame_width = bounds.right - bounds.left + 1;
-    let frame_height = bounds.bottom - bounds.top + 1;
-    let inset_x = 1.max((frame_width as f32 * 0.12).round() as usize);
-    let inset_y = 1.max((frame_height as f32 * 0.12).round() as usize);
-
-    let edges = [
-        edge_border_stats(
-            frame,
-            bounds.left,
-            bounds.top + inset_y,
-            bounds.left,
-            bounds.bottom - inset_y,
-            Axis::X,
-        ),
-        edge_border_stats(
-            frame,
-            bounds.right,
-            bounds.top + inset_y,
-            bounds.right,
-            bounds.bottom - inset_y,
-            Axis::X,
-        ),
-        edge_border_stats(
-            frame,
-            bounds.left + inset_x,
-            bounds.top,
-            bounds.right - inset_x,
-            bounds.top,
-            Axis::Y,
-        ),
-        edge_border_stats(
-            frame,
-            bounds.left + inset_x,
-            bounds.bottom,
-            bounds.right - inset_x,
-            bounds.bottom,
-            Axis::Y,
-        ),
-    ];
-
-    if edges.iter().any(|edge| edge.coverage < 0.9) {
-        return false;
-    }
-
-    edges.iter().map(|edge| edge.coverage).sum::<f32>() / edges.len() as f32 >= 0.95
-}
-
 /// Outside the frame the door and legacy loading screens are pure black. This is
 /// the strongest in-game guard: normal gameplay and inventory/quest panels leave
 /// HUD elements or lit scenery around the screen.
@@ -635,23 +599,67 @@ fn has_black_background(frame: &Frame<'_>, content_top: usize, bounds: Bounds) -
     let top = bounds.top.saturating_sub(padding);
     let bottom = (bounds.bottom + padding).min(frame.height - 1);
 
-    let mut black_pixels = 0u64;
-    let mut pixels = 0u64;
+    let total = frame
+        .width
+        .saturating_mul(frame.height.saturating_sub(scan_top));
+    let rect_top = top.max(scan_top);
+    let excluded = if rect_top <= bottom && left <= right {
+        (bottom - rect_top + 1).saturating_mul(right - left + 1)
+    } else {
+        0
+    };
+    let outside = total.saturating_sub(excluded);
+    if outside == 0 {
+        return false;
+    }
+
+    // The background must be at least 98.5% black, so more than 1.5% non-black
+    // pixels is already a rejection. Bail out instead of scanning the whole
+    // frame; this is the common path for gameplay frames.
+    let max_non_black = outside.saturating_mul(MAX_BACKGROUND_NON_BLACK_PER_THOUSAND) / 1000;
+    let mut non_black = 0usize;
 
     for y in scan_top..frame.height {
-        for x in 0..frame.width {
-            if x >= left && x <= right && y >= top && y <= bottom {
-                continue;
+        if y >= top && y <= bottom {
+            if !count_non_black(frame, y, 0, left, &mut non_black, max_non_black) {
+                return false;
             }
-
-            pixels += 1;
-            if is_black(frame, x, y) {
-                black_pixels += 1;
+            if !count_non_black(
+                frame,
+                y,
+                right + 1,
+                frame.width,
+                &mut non_black,
+                max_non_black,
+            ) {
+                return false;
             }
+        } else if !count_non_black(frame, y, 0, frame.width, &mut non_black, max_non_black) {
+            return false;
         }
     }
 
-    pixels > 0 && black_pixels as f32 / pixels as f32 >= MIN_BACKGROUND_BLACK_RATIO
+    true
+}
+
+#[inline]
+fn count_non_black(
+    frame: &Frame<'_>,
+    y: usize,
+    start_x: usize,
+    end_x: usize,
+    non_black: &mut usize,
+    max_non_black: usize,
+) -> bool {
+    for x in start_x..end_x {
+        if !is_black(frame, x, y) {
+            *non_black += 1;
+            if *non_black > max_non_black {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// The waypoint/area logo screen is an almost completely black frame with the
@@ -665,11 +673,11 @@ fn is_logo_loading(frame: &Frame<'_>, content_top: usize) -> bool {
 
     // Skip the titlebar area in windowed mode. The logo sits far below it.
     let scan_top = content_top + (inner_height as f32 * 0.1).round() as usize;
-    let scan = scan_non_black(frame, scan_top);
+    let Some(scan) = scan_non_black(frame, scan_top) else {
+        return false;
+    };
 
-    if scan.non_black < 8
-        || scan.non_black as f32 / scan.total.max(1) as f32 > MAX_LOGO_NON_BLACK_RATIO
-    {
+    if scan.non_black < 8 {
         return false;
     }
 
@@ -719,9 +727,19 @@ fn is_logo_loading(frame: &Frame<'_>, content_top: usize) -> bool {
         && warm_pixels as f32 / pixels as f32 >= 0.25
 }
 
-fn scan_non_black(frame: &Frame<'_>, start_y: usize) -> NonBlackScan {
+/// Scan the frame below `start_y`. Returns `None` as soon as the non-black
+/// ratio exceeds the logo screen's allowance; gameplay frames reject after a
+/// small fraction of the scan instead of reading the whole frame.
+fn scan_non_black(frame: &Frame<'_>, start_y: usize) -> Option<NonBlackScan> {
+    let total = frame
+        .width
+        .saturating_mul(frame.height.saturating_sub(start_y));
+    if total == 0 {
+        return None;
+    }
+    let max_non_black = total.saturating_mul(MAX_LOGO_NON_BLACK_PERCENT) / 100;
+
     let mut non_black = 0usize;
-    let mut total = 0usize;
     let mut left = frame.width;
     let mut top = frame.height;
     let mut right = 0usize;
@@ -729,10 +747,11 @@ fn scan_non_black(frame: &Frame<'_>, start_y: usize) -> NonBlackScan {
 
     for y in start_y..frame.height {
         for x in 0..frame.width {
-            total += 1;
-
             if is_content(frame, x, y) {
                 non_black += 1;
+                if non_black > max_non_black {
+                    return None;
+                }
                 left = left.min(x);
                 top = top.min(y);
                 right = right.max(x);
@@ -741,16 +760,15 @@ fn scan_non_black(frame: &Frame<'_>, start_y: usize) -> NonBlackScan {
         }
     }
 
-    NonBlackScan {
+    Some(NonBlackScan {
         non_black,
-        total,
         bounds: Bounds {
             left,
             top,
             right,
             bottom,
         },
-    }
+    })
 }
 
 #[cfg(test)]
@@ -758,6 +776,9 @@ mod tests {
     use super::*;
 
     use std::path::PathBuf;
+
+    /// Fixtures are normalized to a 160-pixel long side before detection.
+    const FIXTURE_SIZE: usize = 160;
 
     struct RgbaImage {
         data: Vec<u8>,
@@ -852,7 +873,7 @@ mod tests {
     }
 
     fn expect_loading(name: &str, expected: bool) {
-        let image = load_png(name, MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png(name, FIXTURE_SIZE, FIXTURE_SIZE);
         let actual = detect_loading(&image.data, image.width, image.height);
         assert_eq!(
             actual,
@@ -1013,7 +1034,7 @@ mod tests {
 
     #[test]
     fn works_with_rgb24_frames() {
-        let image = load_png("1280x720-door.png", MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png("1280x720-door.png", FIXTURE_SIZE, FIXTURE_SIZE);
         let mut rgb24 = Vec::with_capacity(image.width * image.height * 3);
         for pixel in image.data.chunks_exact(4) {
             rgb24.extend_from_slice(&pixel[..3]);
@@ -1023,7 +1044,7 @@ mod tests {
 
     #[test]
     fn ignores_the_animated_center_of_a_door_loading_frame() {
-        let image = load_png("1280x720-door.png", MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png("1280x720-door.png", FIXTURE_SIZE, FIXTURE_SIZE);
         let mut frame = image.data.clone();
         let mut seed = 12345u32;
         let mut random = || {
@@ -1047,7 +1068,7 @@ mod tests {
 
     #[test]
     fn rejects_a_framed_image_without_a_golden_border() {
-        let image = load_png("1280x720-door.png", MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png("1280x720-door.png", FIXTURE_SIZE, FIXTURE_SIZE);
         let mut frame = image.data.clone();
         let width = image.width;
 
@@ -1062,7 +1083,7 @@ mod tests {
 
     #[test]
     fn rejects_a_framed_image_when_the_outside_is_not_black() {
-        let image = load_png("1280x720-door.png", MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png("1280x720-door.png", FIXTURE_SIZE, FIXTURE_SIZE);
         let mut frame = image.data.clone();
         let width = image.width;
 
@@ -1076,7 +1097,7 @@ mod tests {
 
     #[test]
     fn ignores_a_windowed_titlebar() {
-        let image = load_png("1280x720-door.png", MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png("1280x720-door.png", FIXTURE_SIZE, FIXTURE_SIZE);
         let titlebar = 8;
         let height = image.height + titlebar;
         let mut frame = make_black_frame(image.width, height);
@@ -1140,7 +1161,7 @@ mod tests {
 
     #[test]
     fn rejects_an_in_game_frame_with_a_warm_logo_area_patch() {
-        let image = load_png("1280x720-dark.png", MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+        let image = load_png("1280x720-dark.png", FIXTURE_SIZE, FIXTURE_SIZE);
         let mut frame = image.data.clone();
         paint_rect(&mut frame, image.width, 143, 74, 155, 81, 255, 120, 20);
         assert!(!detect_loading(&frame, image.width, image.height));
@@ -1169,7 +1190,7 @@ mod tests {
         ];
 
         for name in names {
-            let image = load_png(name, MIN_IMAGE_SIZE, MIN_IMAGE_SIZE);
+            let image = load_png(name, FIXTURE_SIZE, FIXTURE_SIZE);
             let frame = Frame {
                 data: &image.data,
                 stride: 4,
@@ -1188,12 +1209,19 @@ mod tests {
             if bounds.is_none() && name.contains("logo") {
                 let inner_height = frame.height - content_top;
                 let scan_top = content_top + (inner_height as f32 * 0.1).round() as usize;
-                let scan = scan_non_black(&frame, scan_top);
+                let scan = match scan_non_black(&frame, scan_top) {
+                    Some(scan) => scan,
+                    None => {
+                        println!("  logo scan rejected: too much non-black content");
+                        continue;
+                    }
+                };
+                let total = frame.width * (frame.height - scan_top);
                 println!(
                     "  logo scan nonblack={} total={} ratio={:.4} bounds={:?}",
                     scan.non_black,
-                    scan.total,
-                    scan.non_black as f32 / scan.total.max(1) as f32,
+                    total,
+                    scan.non_black as f32 / total.max(1) as f32,
                     scan.bounds
                 );
                 let bounds = scan.bounds;
@@ -1266,48 +1294,15 @@ mod tests {
                     }
                 }
 
-                let edges = [
-                    edge_border_stats(
-                        &frame,
-                        bounds.left,
-                        bounds.top + 1.max((frame_height as f32 * 0.12) as usize),
-                        bounds.left,
-                        bounds.bottom - 1.max((frame_height as f32 * 0.12) as usize),
-                        Axis::X,
-                    ),
-                    edge_border_stats(
-                        &frame,
-                        bounds.right,
-                        bounds.top + 1.max((frame_height as f32 * 0.12) as usize),
-                        bounds.right,
-                        bounds.bottom - 1.max((frame_height as f32 * 0.12) as usize),
-                        Axis::X,
-                    ),
-                    edge_border_stats(
-                        &frame,
-                        bounds.left + 1.max((frame_width as f32 * 0.12) as usize),
-                        bounds.top,
-                        bounds.right - 1.max((frame_width as f32 * 0.12) as usize),
-                        bounds.top,
-                        Axis::Y,
-                    ),
-                    edge_border_stats(
-                        &frame,
-                        bounds.left + 1.max((frame_width as f32 * 0.12) as usize),
-                        bounds.bottom,
-                        bounds.right - 1.max((frame_width as f32 * 0.12) as usize),
-                        bounds.bottom,
-                        Axis::Y,
-                    ),
-                ];
+                let edges = border_stats(&frame, bounds);
 
                 println!(
                     "  aspect={:.2} wr={:.2} hr={:.2} border={} artwork={} bg={}",
                     frame_width as f32 / frame_height as f32,
                     frame_width as f32 / inner_height as f32,
                     frame_height as f32 / inner_height as f32,
-                    has_frame_border(&frame, bounds),
-                    has_loading_artwork(&frame, bounds),
+                    is_normal_border(&edges),
+                    loading_artwork_stats(&frame, bounds).is_some_and(|stats| stats.is_loading()),
                     has_black_background(&frame, content_top, bounds)
                 );
                 println!(

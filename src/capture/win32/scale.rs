@@ -3,7 +3,7 @@
 //! WGC hands us a BGRA8 texture at the window's native size. Generating a mip
 //! chain on the GPU gives a box-filtered image down to (typically) 240x135;
 //! only that small image is read back, then a CPU box filter produces the
-//! detector's 160-pixel-short-side frame. This avoids both a naive bilinear
+//! detector's 160-pixel-long-side frame. This avoids both a naive bilinear
 //! downscale and a full-resolution CPU readback.
 
 use windows::core::Interface;
@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
 };
 
-pub const DETECTOR_SHORT_SIDE: u32 = 160;
+pub const DETECTOR_LONG_SIDE: u32 = 160;
 
 pub struct ScaledFrame<'a> {
     pub data: &'a [u8],
@@ -96,7 +96,7 @@ impl Downscaler {
         target_width: u32,
         target_height: u32,
     ) -> Result<(u32, u32, u32), String> {
-        let levels = mip_level_count(desc.Width, desc.Height);
+        let levels = mip_level_count(desc.Width, desc.Height, target_width, target_height);
         let needs_recreate = self
             .mip
             .as_ref()
@@ -267,7 +267,6 @@ impl Downscaler {
             return Err("staging texture mapped to null".to_string());
         }
 
-        let context = self.context.clone();
         let result = box_filter(
             mapped.pData as *const u8,
             mapped.RowPitch as usize,
@@ -280,7 +279,7 @@ impl Downscaler {
         );
 
         unsafe {
-            context.Unmap(&resource, 0);
+            self.context.Unmap(&resource, 0);
         }
 
         result
@@ -319,24 +318,34 @@ fn create_texture(
     texture.ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_POINTER))
 }
 
-fn mip_level_count(width: u32, height: u32) -> u32 {
-    let mut size = width.max(height);
+/// Number of mip levels needed to reach a level at or just above the detector
+/// target. Generating the full chain down to 1x1 would make `GenerateMips`
+/// do work the detector never reads.
+fn mip_level_count(width: u32, height: u32, target_width: u32, target_height: u32) -> u32 {
+    let mut width = width;
+    let mut height = height;
     let mut levels = 1;
-    while size > 1 {
-        size >>= 1;
+
+    loop {
+        let next_width = (width >> 1).max(1);
+        let next_height = (height >> 1).max(1);
+        if next_width < target_width || next_height < target_height {
+            return levels;
+        }
+        width = next_width;
+        height = next_height;
         levels += 1;
     }
-    levels
 }
 
 fn target_dimensions(width: u32, height: u32) -> (u32, u32) {
-    let short = DETECTOR_SHORT_SIDE as f64;
+    let long = DETECTOR_LONG_SIDE as f64;
     let (mut target_width, mut target_height) = if width >= height {
-        let height = (short * height as f64 / width as f64).round() as u32;
-        (DETECTOR_SHORT_SIDE, height)
+        let height = (long * height as f64 / width as f64).round() as u32;
+        (DETECTOR_LONG_SIDE, height)
     } else {
-        let width = (short * width as f64 / height as f64).round() as u32;
-        (width, DETECTOR_SHORT_SIDE)
+        let width = (long * width as f64 / height as f64).round() as u32;
+        (width, DETECTOR_LONG_SIDE)
     };
 
     target_width = (target_width.max(2) / 2) * 2;
@@ -357,10 +366,11 @@ fn box_filter<'a>(
 ) -> Result<ScaledFrame<'a>, String> {
     let kind = PixelKind::from_format(format)
         .ok_or_else(|| format!("unsupported capture format {format:?}"))?;
-    let bytes_per_pixel = kind.bytes_per_pixel();
 
-    output.clear();
-    output.resize(target_width * target_height * 4, 0);
+    let needed = target_width * target_height * 4;
+    if output.len() != needed {
+        output.resize(needed, 0);
+    }
     let mut max_channel = 0u8;
 
     for target_y in 0..target_height {
@@ -388,7 +398,6 @@ fn box_filter<'a>(
         }
     }
 
-    let _ = bytes_per_pixel;
     Ok(ScaledFrame {
         data: output.as_slice(),
         width: target_width,
@@ -418,13 +427,6 @@ impl PixelKind {
         }
     }
 
-    fn bytes_per_pixel(self) -> usize {
-        match self {
-            Self::Bgra8 | Self::Rgba8 | Self::Bgrx8 | Self::Rgb10a2 => 4,
-            Self::Rgba16Float => 8,
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn average_region(
         self,
@@ -435,7 +437,8 @@ impl PixelKind {
         x1: usize,
         y1: usize,
     ) -> (u8, u8, u8) {
-        let count = ((x1 - x0) * (y1 - y0)).max(1) as f32;
+        let count = ((x1 - x0) * (y1 - y0)).max(1);
+        let inverse = 1.0 / count as f32;
 
         match self {
             Self::Bgra8 | Self::Bgrx8 => {
@@ -452,9 +455,9 @@ impl PixelKind {
                     }
                 }
                 (
-                    (red as f32 / count) as u8,
-                    (green as f32 / count) as u8,
-                    (blue as f32 / count) as u8,
+                    (red as f32 * inverse) as u8,
+                    (green as f32 * inverse) as u8,
+                    (blue as f32 * inverse) as u8,
                 )
             }
             Self::Rgba8 => {
@@ -471,9 +474,9 @@ impl PixelKind {
                     }
                 }
                 (
-                    (red as f32 / count) as u8,
-                    (green as f32 / count) as u8,
-                    (blue as f32 / count) as u8,
+                    (red as f32 * inverse) as u8,
+                    (green as f32 * inverse) as u8,
+                    (blue as f32 * inverse) as u8,
                 )
             }
             Self::Rgba16Float => {
@@ -492,9 +495,9 @@ impl PixelKind {
                     }
                 }
                 (
-                    (red / count * 255.0).clamp(0.0, 255.0) as u8,
-                    (green / count * 255.0).clamp(0.0, 255.0) as u8,
-                    (blue / count * 255.0).clamp(0.0, 255.0) as u8,
+                    (red * inverse * 255.0).clamp(0.0, 255.0) as u8,
+                    (green * inverse * 255.0).clamp(0.0, 255.0) as u8,
+                    (blue * inverse * 255.0).clamp(0.0, 255.0) as u8,
                 )
             }
             Self::Rgb10a2 => {
@@ -512,9 +515,9 @@ impl PixelKind {
                     }
                 }
                 (
-                    (red as f32 / count) as u8,
-                    (green as f32 / count) as u8,
-                    (blue as f32 / count) as u8,
+                    (red as f32 * inverse) as u8,
+                    (green as f32 * inverse) as u8,
+                    (blue as f32 * inverse) as u8,
                 )
             }
         }
@@ -698,12 +701,20 @@ mod tests {
     }
 
     #[test]
-    fn detector_targets_short_side_160_with_even_dimensions() {
+    fn detector_targets_long_side_160_with_even_dimensions() {
         assert_eq!(target_dimensions(1920, 1080), (160, 90));
         assert_eq!(target_dimensions(1920, 1200), (160, 100));
         assert_eq!(target_dimensions(2048, 1536), (160, 120));
         assert_eq!(target_dimensions(3840, 2160), (160, 90));
         assert_eq!(target_dimensions(1080, 1920), (90, 160));
+    }
+
+    #[test]
+    fn mip_chain_stops_just_above_the_detector_target() {
+        assert_eq!(mip_level_count(1920, 1080, 160, 90), 4);
+        assert_eq!(mip_level_count(3840, 2160, 160, 90), 5);
+        assert_eq!(mip_level_count(160, 90, 160, 90), 1);
+        assert_eq!(mip_level_count(100, 100, 160, 100), 1);
     }
 
     #[test]

@@ -21,7 +21,7 @@ const MAX_PAUSE_TRANSITIONS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureStatus {
-    Disabled,
+    Off,
     Searching,
     Capturing,
     Lost,
@@ -31,7 +31,7 @@ pub enum CaptureStatus {
 impl CaptureStatus {
     fn label(self) -> &'static str {
         match self {
-            Self::Disabled => "off",
+            Self::Off => "off",
             Self::Searching => "waiting for D2R",
             Self::Capturing => "capturing",
             Self::Lost => "capture lost",
@@ -59,19 +59,17 @@ impl LiveSplitStatus {
 
 #[derive(Clone)]
 pub struct Snapshot {
-    pub enabled: bool,
     pub desired_paused: bool,
-    pub settings: Config,
+    pub settings: Arc<Config>,
     pub revision: u64,
     pub reconnect_generation: u64,
     pub shutdown: bool,
 }
 
 struct Inner {
-    enabled: bool,
     desired_paused: bool,
     pause_transitions: VecDeque<PauseTransition>,
-    settings: Config,
+    settings: Arc<Config>,
     revision: u64,
     reconnect_generation: u64,
     shutdown: bool,
@@ -89,13 +87,11 @@ pub struct SharedState {
 
 impl SharedState {
     pub fn new(settings: Config) -> Arc<Self> {
-        let enabled = settings.enabled;
         Arc::new(Self {
             inner: Mutex::new(Inner {
-                enabled,
                 desired_paused: false,
                 pause_transitions: VecDeque::new(),
-                settings,
+                settings: Arc::new(settings),
                 revision: 1,
                 reconnect_generation: 1,
                 shutdown: false,
@@ -115,34 +111,12 @@ impl SharedState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Snapshot {
-            enabled: inner.enabled,
             desired_paused: inner.desired_paused,
-            settings: inner.settings.clone(),
+            settings: Arc::clone(&inner.settings),
             revision: inner.revision,
             reconnect_generation: inner.reconnect_generation,
             shutdown: inner.shutdown,
         }
-    }
-
-    #[cfg(test)]
-    pub fn set_enabled(&self, enabled: bool) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if inner.enabled == enabled {
-            return;
-        }
-        inner.enabled = enabled;
-        if !enabled {
-            inner.desired_paused = false;
-            // Do not replay transitions recorded before the user disabled load
-            // removal when it is enabled again.
-            inner.pause_transitions.clear();
-        }
-        inner.revision = inner.revision.wrapping_add(1);
-        drop(inner);
-        self.changed.notify_all();
     }
 
     pub fn set_desired_paused(&self, paused: bool) {
@@ -192,14 +166,10 @@ impl SharedState {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.enabled = settings.enabled;
-        if !settings.enabled {
-            inner.desired_paused = false;
-        }
         // A settings change (re)connects the worker, which sends the current
         // desired state. Old transitions must not be replayed afterwards.
         inner.pause_transitions.clear();
-        inner.settings = settings;
+        inner.settings = Arc::new(settings);
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();
@@ -303,29 +273,11 @@ impl SharedState {
         }
         inner.revision
     }
-
-    pub fn notify_all(&self) {
-        self.changed.notify_all();
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn disabling_clears_desired_pause_and_bumps_revision() {
-        let shared = SharedState::new(Config::default());
-        let before = shared.snapshot().revision;
-        shared.set_desired_paused(true);
-        assert!(shared.snapshot().desired_paused);
-
-        shared.set_enabled(false);
-        let after = shared.snapshot();
-        assert!(!after.enabled);
-        assert!(!after.desired_paused);
-        assert!(after.revision > before);
-    }
 
     #[test]
     fn desired_pause_only_notifies_on_change() {
@@ -359,17 +311,6 @@ mod tests {
             ]
         );
         assert!(shared.drain_pause_transitions().is_empty());
-    }
-
-    #[test]
-    fn disabling_discards_pending_pause_transitions() {
-        let shared = SharedState::new(Config::default());
-        shared.set_desired_paused_at(true, 10);
-        shared.set_enabled(false);
-        shared.set_enabled(true);
-
-        assert!(shared.drain_pause_transitions().is_empty());
-        assert!(!shared.snapshot().desired_paused);
     }
 
     #[test]

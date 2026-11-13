@@ -6,10 +6,6 @@ use crate::config::TransportKind;
 pub const PAUSE_GAME_TIME: &str = "pausegametime";
 pub const UNPAUSE_GAME_TIME: &str = "unpausegametime";
 pub const GET_CURRENT_TIMER_PHASE: &str = "getcurrenttimerphase";
-#[allow(dead_code)]
-pub const GET_CURRENT_GAME_TIME: &str = "getcurrentgametime";
-#[allow(dead_code)]
-pub const SET_GAME_TIME: &str = "setgametime";
 pub const PING: &str = "ping";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

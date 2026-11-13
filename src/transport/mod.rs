@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use crate::config::{LiveSplitConfig, TransportKind};
 
-pub use pipe::PipeConnection;
-pub use tcp::TcpConnection;
-pub use ws::WebSocketConnection;
+use pipe::PipeConnection;
+use tcp::TcpConnection;
+use ws::WebSocketConnection;
 
 /// A connected LiveSplit command channel.
 pub trait Connection: Send {

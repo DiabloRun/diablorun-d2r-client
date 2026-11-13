@@ -55,8 +55,10 @@ impl TrayIcon {
 
     pub fn add(&mut self, tooltip: &str) {
         let mut data = self.data(tooltip);
-        let _ = unsafe { Shell_NotifyIconW(NIM_ADD, &data) };
-        self.added = true;
+        self.added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
+        if !self.added {
+            return;
+        }
         data.uFlags = NIF_TIP;
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &data);

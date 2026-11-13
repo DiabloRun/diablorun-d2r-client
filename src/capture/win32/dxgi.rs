@@ -21,6 +21,7 @@ pub struct DxgiCapture {
     device: ID3D11Device,
     duplication: IDXGIOutputDuplication,
     hwnd: HWND,
+    monitor: windows::Win32::Graphics::Gdi::HMONITOR,
     monitor_rect: RECT,
     crop: Option<CropTexture>,
 }
@@ -56,9 +57,18 @@ impl DxgiCapture {
             device: device.clone(),
             duplication,
             hwnd,
+            monitor,
             monitor_rect,
             crop: None,
         })
+    }
+
+    /// Desktop duplication is bound to one monitor. WGC follows the window, but
+    /// DXGI must restart when the game moves to a different display.
+    pub fn matches_monitor(&self, hwnd: HWND) -> bool {
+        window::monitor_for_window(hwnd)
+            .map(|(monitor, _)| monitor == self.monitor)
+            .unwrap_or(false)
     }
 
     pub fn next_frame(

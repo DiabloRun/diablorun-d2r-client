@@ -45,7 +45,10 @@ impl PipeConnection {
             match open_pipe(name) {
                 Ok(handle) => {
                     let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
-                        .map_err(win_error)?;
+                        .map_err(|error| {
+                            let _ = unsafe { CloseHandle(handle) };
+                            win_error(error)
+                        })?;
 
                     return Ok(Self {
                         handle: handle.0 as isize,
@@ -122,6 +125,14 @@ impl PipeConnection {
                 } else {
                     unsafe {
                         let _ = CancelIoEx(self.handle(), Some(&overlapped));
+                        // CancelIoEx is asynchronous and `overlapped` lives on
+                        // this stack frame. Wait for the completion event so
+                        // Windows cannot write into freed stack memory after
+                        // we return.
+                        let _ = WaitForSingleObject(self.event(), u32::MAX);
+                        let mut ignored = 0u32;
+                        let _ =
+                            GetOverlappedResult(self.handle(), &overlapped, &mut ignored, false);
                     }
                     let message = if wait == WAIT_TIMEOUT {
                         "Timed out waiting for the LiveSplit named pipe"

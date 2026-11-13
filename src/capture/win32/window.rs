@@ -74,19 +74,17 @@ unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
         None
     };
 
-    let title = window_title(hwnd);
     // The process check is the normal path. The title fallback keeps detection
     // working when process access is denied (for example under some anti-cheat
-    // or sandbox configurations).
+    // or sandbox configurations). Only read the title when it is needed.
     let matches_process = process_path
         .as_deref()
         .and_then(|path| Path::new(path).file_name())
         .and_then(|name| name.to_str())
         .map(|name| name.eq_ignore_ascii_case("D2R.exe"))
         .unwrap_or(false);
-    let matches_title = title == "Diablo II: Resurrected";
 
-    if matches_process || matches_title {
+    if matches_process || window_title(hwnd) == "Diablo II: Resurrected" {
         candidates.push(WindowInfo {
             hwnd,
             client_width: width,
@@ -113,7 +111,7 @@ pub fn window_title(hwnd: HWND) -> String {
 
 fn process_image_name(pid: u32) -> Option<String> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
-    let mut buffer = vec![0u16; 32768];
+    let mut buffer = vec![0u16; 1024];
     let mut size = buffer.len() as u32;
     let result = unsafe {
         QueryFullProcessImageNameW(

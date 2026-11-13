@@ -1,6 +1,5 @@
 //! Portable configuration loading, merging, validation, and saving.
 
-use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -40,12 +39,6 @@ impl TransportKind {
     }
 }
 
-impl fmt::Display for TransportKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 impl Serialize for TransportKind {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
@@ -62,7 +55,6 @@ impl<'de> Deserialize<'de> for TransportKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub enabled: bool,
     pub capture: CaptureConfig,
     pub detection: DetectionConfig,
     pub livesplit: LiveSplitConfig,
@@ -71,7 +63,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            enabled: true,
             capture: CaptureConfig::default(),
             detection: DetectionConfig::default(),
             livesplit: LiveSplitConfig::default(),
@@ -82,8 +73,6 @@ impl Default for Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
-    pub process: String,
-    pub window_title: String,
     pub min_width: u32,
     pub min_height: u32,
 }
@@ -91,8 +80,6 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            process: "D2R.exe".into(),
-            window_title: "Diablo II: Resurrected".into(),
             min_width: 160,
             min_height: 160,
         }
@@ -118,7 +105,6 @@ pub struct LiveSplitConfig {
     pub host: String,
     pub port: u32,
     pub websocket_path: String,
-    pub precision_correction: bool,
 }
 
 impl Default for LiveSplitConfig {
@@ -128,7 +114,6 @@ impl Default for LiveSplitConfig {
             host: "127.0.0.1".into(),
             port: 16834,
             websocket_path: "/livesplit".into(),
-            precision_correction: false,
         }
     }
 }
@@ -248,17 +233,8 @@ impl Config {
     pub fn normalize(&mut self) {
         let defaults = Self::default();
 
-        // The tracker runs enabled for as long as the app is running.
-        self.enabled = true;
-
         self.capture.min_width = clamp(self.capture.min_width, 1, 16384);
         self.capture.min_height = clamp(self.capture.min_height, 1, 16384);
-        if self.capture.process.trim().is_empty() {
-            self.capture.process = defaults.capture.process;
-        }
-        if self.capture.window_title.trim().is_empty() {
-            self.capture.window_title = defaults.capture.window_title;
-        }
 
         self.detection.confirm_frames = clamp(self.detection.confirm_frames, 1, 10);
 
@@ -299,12 +275,6 @@ impl Config {
         if self.capture.min_width == 0 || self.capture.min_height == 0 {
             return Err("Minimum window size must be positive.".into());
         }
-        if self.capture.process.trim().is_empty() {
-            return Err("Process name is required.".into());
-        }
-        if self.capture.window_title.trim().is_empty() {
-            return Err("Window title is required.".into());
-        }
         if self.detection.confirm_frames < 1 || self.detection.confirm_frames > 10 {
             return Err("Confirm frames must be between 1 and 10.".into());
         }
@@ -335,9 +305,9 @@ pub fn save_config(path: &Path, config: &Config) -> io::Result<()> {
 
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, json)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
+    // `fs::rename` maps to MoveFileExW(MOVEFILE_REPLACE_EXISTING) on Windows,
+    // so the destination is replaced in one step. Removing it first would
+    // leave no config behind if the rename failed.
     fs::rename(&temporary, path)
 }
 
@@ -349,7 +319,6 @@ mod tests {
     fn merges_partial_config_with_defaults() {
         let config = parse_config(
             r#"{
-                "enabled": false,
                 "capture": { "min_width": 320, "fps": 30 },
                 "livesplit": { "transport": "tcp", "host": "localhost" },
                 "unknown": { "ignored": true }
@@ -357,9 +326,7 @@ mod tests {
         )
         .expect("parse config");
 
-        assert!(config.enabled);
         assert_eq!(config.capture.min_width, 320);
-        assert_eq!(config.capture.process, "D2R.exe");
         assert_eq!(config.livesplit.transport, TransportKind::Tcp);
         assert_eq!(config.livesplit.host, "localhost");
         assert_eq!(config.livesplit.port, 16834);
@@ -369,15 +336,12 @@ mod tests {
     fn falls_back_for_wrong_types() {
         let config = parse_config(
             r#"{
-                "enabled": "yes",
-                "capture": { "process": null, "min_width": null },
+                "capture": { "min_width": null },
                 "livesplit": { "port": 99999, "transport": "carrier-pigeon" }
             }"#,
         )
         .expect("parse config");
 
-        assert!(config.enabled);
-        assert_eq!(config.capture.process, "D2R.exe");
         assert_eq!(config.capture.min_width, 160);
         assert_eq!(config.livesplit.port, 65535);
         assert_eq!(config.livesplit.transport, TransportKind::Pipe);
@@ -435,6 +399,11 @@ mod tests {
         config.capture.min_width = 320;
         config.livesplit.transport = TransportKind::Tcp;
         save_config(&path, &config).expect("save config");
+
+        // The second save must replace the existing file without an explicit
+        // remove step.
+        config.capture.min_width = 640;
+        save_config(&path, &config).expect("replace config");
 
         let loaded = load_config_from(path.clone());
         assert!(loaded.error.is_none());

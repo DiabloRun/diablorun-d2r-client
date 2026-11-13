@@ -22,6 +22,13 @@ use win32::window;
 /// The detector is tuned for 60 captured frames per second. Capture FPS is not
 /// configurable.
 const CAPTURE_FPS: u32 = 60;
+/// Slightly below 16.67 ms so a regular 60 Hz source is never mistaken for a
+/// duplicate frame.
+const CAPTURE_INTERVAL: Duration = Duration::from_millis(16);
+/// If no new frame arrives for this long, assume capture is stuck. WGC restarts;
+/// DXGI only resumes game time, because a static desktop can legitimately stop
+/// producing duplication frames.
+const NO_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct CapturedTexture {
     pub texture: ID3D11Texture2D,
@@ -72,10 +79,17 @@ impl ActiveCapture {
         }
     }
 
-    fn size(&self) -> (u32, u32) {
+    fn size(&self) -> Option<(u32, u32)> {
         match self {
-            Self::Wgc(capture) => capture.size(),
-            Self::Dxgi(_) => (0, 0),
+            Self::Wgc(capture) => Some(capture.size()),
+            Self::Dxgi(_) => None,
+        }
+    }
+
+    fn matches_monitor(&self, hwnd: windows::Win32::Foundation::HWND) -> bool {
+        match self {
+            Self::Wgc(_) => true,
+            Self::Dxgi(capture) => capture.matches_monitor(hwnd),
         }
     }
 
@@ -90,7 +104,6 @@ impl ActiveCapture {
 enum BreakReason {
     Lost,
     Restart,
-    Disabled,
     Shutdown,
     BlackFallback,
 }
@@ -212,19 +225,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
             break;
         }
 
-        if !snapshot.enabled {
-            runtime.confirm.reset();
-            runtime.loading = false;
-            runtime.had_capture = false;
-            runtime.hint = None;
-            runtime.black_since = None;
-            shared.set_desired_paused(false);
-            shared.set_capture_status(CaptureStatus::Disabled, "");
-            shared.set_hint(None);
-            shared.wait_for_revision(snapshot.revision, Duration::from_millis(200));
-            continue;
-        }
-
         let capture_config = snapshot.settings.capture.clone();
         if last_capture_config
             .as_ref()
@@ -275,17 +275,7 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
         runtime.had_capture = true;
         shared.set_capture_status(
             CaptureStatus::Capturing,
-            format!(
-                "D2R.exe {}x{} via {} ({})",
-                expected_size.0,
-                expected_size.1,
-                capture.kind().label(),
-                if runtime.loading {
-                    "loading"
-                } else {
-                    "playing"
-                }
-            ),
+            capture_detail(expected_size, capture.kind(), runtime.loading),
         );
 
         let confirm_frames = snapshot.settings.detection.confirm_frames.max(1);
@@ -306,24 +296,14 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
         }
 
         match reason {
-            BreakReason::Disabled => {
-                runtime.confirm.reset();
-                runtime.loading = false;
-                runtime.had_capture = false;
-                shared.set_desired_paused(false);
-                shared.set_capture_status(CaptureStatus::Disabled, "");
+            BreakReason::Shutdown => break 'main,
+            BreakReason::Restart => {
+                runtime.black_since = None;
                 continue;
             }
-            BreakReason::Shutdown => break 'main,
-            BreakReason::Restart => continue,
             BreakReason::BlackFallback => {
                 if capture.kind() == Backend::Wgc {
                     wgc_failures += 1;
-                    if wgc_failures >= 3 {
-                        backend = Backend::Dxgi;
-                    }
-                }
-                if backend == Backend::Wgc {
                     backend = Backend::Dxgi;
                 }
                 continue;
@@ -347,7 +327,7 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
     }
 
     shared.set_desired_paused(false);
-    shared.set_capture_status(CaptureStatus::Disabled, "");
+    shared.set_capture_status(CaptureStatus::Off, "");
     if com_initialized {
         unsafe { windows::Win32::System::WinRT::RoUninitialize() };
     }
@@ -367,15 +347,13 @@ fn capture_session(
 ) -> BreakReason {
     let mut last_frame_at = Instant::now();
     let mut last_window_check = Instant::now();
+    let mut next_processed_at = Instant::now();
     let backend = capture.kind();
 
     loop {
         let snapshot = shared.snapshot();
         if snapshot.shutdown {
             return BreakReason::Shutdown;
-        }
-        if !snapshot.enabled {
-            return BreakReason::Disabled;
         }
         if snapshot.settings.capture != *capture_config
             || snapshot.settings.detection.confirm_frames.max(1) != confirm_frames
@@ -387,9 +365,28 @@ fn capture_session(
             Ok(Some(frame)) => {
                 last_frame_at = Instant::now();
 
-                if backend == Backend::Wgc && frame.size != capture.size() {
+                if !capture.matches_monitor(hwnd) {
                     return BreakReason::Restart;
                 }
+                if let Some(size) = capture.size() {
+                    if frame.size != size {
+                        return BreakReason::Restart;
+                    }
+                }
+
+                // WGC honors SetMinUpdateInterval, but desktop duplication can
+                // deliver at the monitor refresh rate. Keep an absolute 60 FPS
+                // deadline so a 144 Hz source still averages one processed
+                // frame per 16.7 ms instead of dropping every other frame.
+                let now = Instant::now();
+                if now < next_processed_at {
+                    continue;
+                }
+                next_processed_at = if next_processed_at + CAPTURE_INTERVAL <= now {
+                    now + CAPTURE_INTERVAL
+                } else {
+                    next_processed_at + CAPTURE_INTERVAL
+                };
 
                 let scaled = match scaler.downscale(&frame.texture) {
                     Ok(scaled) => scaled,
@@ -415,7 +412,10 @@ fn capture_session(
                     }
                 }
 
-                let detected = detector::detect_loading(&scaled.data, scaled.width, scaled.height);
+                // An all-black frame cannot contain a loading screen; the
+                // detector would scan the whole frame to reach the same answer.
+                let detected = !scaled.all_black
+                    && detector::detect_loading(&scaled.data, scaled.width, scaled.height);
                 let confirmed = runtime
                     .confirm
                     .update(detected, frame.timestamp, confirm_frames);
@@ -428,13 +428,7 @@ fn capture_session(
                     runtime.loading = confirmed;
                     shared.set_capture_status(
                         CaptureStatus::Capturing,
-                        format!(
-                            "D2R.exe {}x{} via {} ({})",
-                            expected_size.0,
-                            expected_size.1,
-                            backend.label(),
-                            if confirmed { "loading" } else { "playing" }
-                        ),
+                        capture_detail(expected_size, backend, confirmed),
                     );
                 }
                 // Also covers the first frame after a restart or a lost window.
@@ -446,21 +440,50 @@ fn capture_session(
                     if !window::is_capturable(hwnd) {
                         return BreakReason::Lost;
                     }
-                    if window::client_size(hwnd)
-                        .map(|size| size != expected_size)
-                        .unwrap_or(true)
+                    if !capture.matches_monitor(hwnd)
+                        || window::client_size(hwnd)
+                            .map(|size| size != expected_size)
+                            .unwrap_or(true)
                     {
                         return BreakReason::Restart;
                     }
                 }
 
-                if backend == Backend::Wgc && last_frame_at.elapsed() >= Duration::from_secs(10) {
-                    return BreakReason::Lost;
+                if last_frame_at.elapsed() >= NO_FRAME_TIMEOUT {
+                    if backend == Backend::Wgc {
+                        return BreakReason::Lost;
+                    }
+                    // Desktop duplication can legitimately stop delivering
+                    // frames for a static screen. WGC restarts; DXGI only has
+                    // to protect game time from staying paused forever.
+                    if runtime.loading {
+                        runtime.loading = false;
+                        shared.set_desired_paused_at(false, 0);
+                        shared.set_capture_status(
+                            CaptureStatus::Capturing,
+                            capture_detail(expected_size, backend, false),
+                        );
+                        let message = "No new frames - game time resumed";
+                        if runtime.hint.as_deref() != Some(message) {
+                            runtime.hint = Some(message.to_string());
+                            shared.set_hint(Some(message.to_string()));
+                        }
+                    }
                 }
             }
             Err(_) => return BreakReason::Lost,
         }
     }
+}
+
+fn capture_detail(expected_size: (u32, u32), backend: Backend, loading: bool) -> String {
+    format!(
+        "D2R.exe {}x{} via {} ({})",
+        expected_size.0,
+        expected_size.1,
+        backend.label(),
+        if loading { "loading" } else { "playing" }
+    )
 }
 
 fn start_capture(

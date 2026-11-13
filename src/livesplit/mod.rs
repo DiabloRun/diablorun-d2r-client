@@ -102,13 +102,6 @@ impl Controller {
     }
 
     fn send_command(&mut self, command: &str, expect_response: bool) -> io::Result<Option<String>> {
-        if !self.is_connected() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "LiveSplit is not connected",
-            ));
-        }
-
         let connection = self.connection()?;
         connection.send_command(command)?;
 
@@ -223,14 +216,13 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
         }
 
         if snapshot.settings.livesplit != *controller.settings() {
-            controller.disconnect();
             controller.apply_settings(snapshot.settings.livesplit.clone());
             shared.drain_pause_transitions();
             next_retry = Instant::now();
             next_poll = Instant::now();
         }
 
-        let mut desired = snapshot.enabled && snapshot.desired_paused;
+        let mut desired = snapshot.desired_paused;
 
         if !controller.is_connected() {
             // Transitions cannot be applied while disconnected. The latest
@@ -270,12 +262,9 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
             // of the loop can be older than the transition that woke us; using
             // its desired state here would immediately undo that transition.
             let latest = shared.snapshot();
-            desired = latest.enabled && latest.desired_paused;
+            desired = latest.desired_paused;
 
             for transition in transitions {
-                if !latest.enabled {
-                    break;
-                }
                 if let Err(error) = controller.send_desired(transition.paused) {
                     mark_disconnected(&shared, &mut controller, &mut next_retry, error);
                     break;

@@ -10,14 +10,17 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CreateDialogIndirectParamW, CreateWindowExW, DestroyWindow,
-    DialogBoxIndirectParamW, EndDialog, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW,
-    GetWindowTextW, LoadIconW, MapDialogRect, MessageBoxW, SendMessageW, SetDlgItemTextW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CBS_DROPDOWNLIST,
-    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL,
-    MB_ICONWARNING, MB_OK, SW_SHOWNORMAL, WM_GETFONT, WM_SETFONT, WM_SETICON, WS_CHILD,
-    WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    BringWindowToTop, CreateDialogIndirectParamW, CreateWindowExW, DestroyWindow, EndDialog,
+    GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, LoadIconW, MapDialogRect,
+    MessageBoxW, SendMessageW, SetDlgItemTextW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowTextW, ShowWindow, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
+    ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL, MB_ICONWARNING, MB_OK, SW_SHOWNORMAL,
+    WM_GETFONT, WM_SETFONT, WM_SETICON, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
+
+#[cfg(test)]
+use windows::Win32::UI::WindowsAndMessaging::DialogBoxIndirectParamW;
 
 use crate::config::{Config, LiveSplitConfig, TransportKind};
 use crate::theme;
@@ -97,8 +100,8 @@ pub fn open(parent: HWND, current: &Config) -> Result<HWND, String> {
 }
 
 /// Show the modal settings dialog. Returns the new config when Save is pressed.
-/// Kept for the native dialog tests; the app uses the modeless `open`.
-#[allow(dead_code)]
+/// Only used by the native dialog tests; the app uses the modeless `open`.
+#[cfg(test)]
 pub fn show(parent: HWND, current: &Config) -> Option<Config> {
     theme::init();
     let mut state = DialogState {
@@ -647,7 +650,6 @@ fn read_ui(hwnd: HWND, state: &DialogState) -> Option<Config> {
         host: get_text(hwnd, ID_HOST),
         port: parse_u32(&get_text(hwnd, ID_PORT)).unwrap_or(0),
         websocket_path: get_text(hwnd, ID_WS_PATH),
-        precision_correction: config.livesplit.precision_correction,
     };
 
     Some(config)

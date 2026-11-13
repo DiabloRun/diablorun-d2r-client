@@ -77,11 +77,11 @@ pub fn run(config: Config, config_path: PathBuf, options: Options) -> Result<(),
 
     MESSAGE_WINDOW.store(hwnd.0 as isize, Ordering::SeqCst);
 
-    let mut app = Box::new(App::new(hwnd, config, config_path, options));
+    let mut app = Box::new(App::new(hwnd, config, config_path));
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, app.as_mut() as *mut App as isize);
     }
-    app.start();
+    app.start(&options);
 
     let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
     loop {
@@ -109,8 +109,8 @@ struct App {
     shared: Arc<SharedState>,
     config: Config,
     config_path: PathBuf,
-    options: Options,
     tray: Option<TrayIcon>,
+    last_tooltip: Option<String>,
     capture_thread: Option<std::thread::JoinHandle<()>>,
     livesplit_thread: Option<std::thread::JoinHandle<()>>,
     stopped: bool,
@@ -118,15 +118,15 @@ struct App {
 }
 
 impl App {
-    fn new(hwnd: HWND, config: Config, config_path: PathBuf, options: Options) -> Self {
+    fn new(hwnd: HWND, config: Config, config_path: PathBuf) -> Self {
         let shared = SharedState::new(config.clone());
         Self {
             hwnd,
             shared,
             config,
             config_path,
-            options,
             tray: None,
+            last_tooltip: None,
             capture_thread: None,
             livesplit_thread: None,
             stopped: false,
@@ -134,9 +134,9 @@ impl App {
         }
     }
 
-    fn start(&mut self) {
+    fn start(&mut self, options: &Options) {
         let capture_shared = self.shared.clone();
-        let save_frames = self.options.save_frames.clone();
+        let save_frames = options.save_frames.clone();
         match std::thread::Builder::new()
             .name("capture".into())
             .spawn(move || capture::run(capture_shared, save_frames))
@@ -162,14 +162,16 @@ impl App {
             ),
         }
 
-        if !self.options.no_tray {
+        if !options.no_tray {
+            let tooltip = self.shared.tooltip();
             let mut tray = TrayIcon::new(self.hwnd);
-            tray.add(&self.shared.tooltip());
+            tray.add(&tooltip);
             self.tray = Some(tray);
-        }
+            self.last_tooltip = Some(tooltip);
 
-        unsafe {
-            let _ = SetTimer(Some(self.hwnd), TIMER_ID, 500, None);
+            unsafe {
+                let _ = SetTimer(Some(self.hwnd), TIMER_ID, 500, None);
+            }
         }
     }
 
@@ -180,11 +182,11 @@ impl App {
         self.stopped = true;
         self.close_settings();
         self.shared.request_shutdown();
-        self.shared.notify_all();
 
         if let Some(tray) = self.tray.as_mut() {
             tray.remove();
         }
+        self.last_tooltip = None;
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_ID);
         }
@@ -231,8 +233,6 @@ impl App {
     }
 
     fn apply_settings(&mut self, mut new_config: Config) {
-        // The tracker is always enabled while the app is running.
-        new_config.enabled = true;
         new_config.normalize();
         if let Err(error) = new_config.validate() {
             show_error_message(self.hwnd, &format!("Invalid settings: {error}"));
@@ -252,8 +252,13 @@ impl App {
     }
 
     fn update_tooltip(&mut self) {
-        if let Some(tray) = self.tray.as_mut() {
-            tray.set_tooltip(&self.shared.tooltip());
+        let Some(tray) = self.tray.as_mut() else {
+            return;
+        };
+        let tooltip = self.shared.tooltip();
+        if self.last_tooltip.as_deref() != Some(tooltip.as_str()) {
+            tray.set_tooltip(&tooltip);
+            self.last_tooltip = Some(tooltip);
         }
     }
 
@@ -276,7 +281,9 @@ impl App {
 
     fn taskbar_created(&mut self) {
         if let Some(tray) = self.tray.as_mut() {
-            tray.recreate(&self.shared.tooltip());
+            let tooltip = self.shared.tooltip();
+            tray.recreate(&tooltip);
+            self.last_tooltip = Some(tooltip);
         }
     }
 }

@@ -10,7 +10,6 @@ use super::Connection;
 
 pub struct WebSocketConnection {
     socket: WebSocket<TcpStream>,
-    timeout: Duration,
 }
 
 impl WebSocketConnection {
@@ -33,7 +32,7 @@ impl WebSocketConnection {
                     let url = format!("ws://{host}:{port}{path}");
                     match client(&url, stream) {
                         Ok((socket, _response)) => {
-                            return Ok(Self { socket, timeout });
+                            return Ok(Self { socket });
                         }
                         Err(error) => {
                             last_error =
@@ -98,7 +97,6 @@ impl Connection for WebSocketConnection {
     }
 
     fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.timeout = timeout;
         self.apply_timeout(timeout)
     }
 }
