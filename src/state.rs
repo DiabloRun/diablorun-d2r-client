@@ -1,9 +1,23 @@
 //! Shared state between the UI, capture thread, and LiveSplit worker.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::config::Config;
+
+/// A capture-side pause/unpause transition. The frame timestamp is the WGC
+/// presentation timestamp (100 ns units) and is kept so the event can be
+/// correlated with the frame that caused it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PauseTransition {
+    pub paused: bool,
+    pub timestamp: i64,
+}
+
+/// Transitions are drained by the LiveSplit worker immediately. The cap only
+/// protects against unbounded growth if that worker stalls for a long time.
+const MAX_PAUSE_TRANSITIONS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureStatus {
@@ -56,6 +70,7 @@ pub struct Snapshot {
 struct Inner {
     enabled: bool,
     desired_paused: bool,
+    pause_transitions: VecDeque<PauseTransition>,
     settings: Config,
     revision: u64,
     reconnect_generation: u64,
@@ -79,6 +94,7 @@ impl SharedState {
             inner: Mutex::new(Inner {
                 enabled,
                 desired_paused: false,
+                pause_transitions: VecDeque::new(),
                 settings,
                 revision: 1,
                 reconnect_generation: 1,
@@ -126,6 +142,9 @@ impl SharedState {
         inner.enabled = enabled;
         if !enabled {
             inner.desired_paused = false;
+            // Do not replay transitions recorded before the user disabled load
+            // removal when it is enabled again.
+            inner.pause_transitions.clear();
         }
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
@@ -139,6 +158,13 @@ impl SharedState {
     }
 
     pub fn set_desired_paused(&self, paused: bool) {
+        self.set_desired_paused_at(paused, 0);
+    }
+
+    /// Record a pause/unpause transition. Every change is journalled so the
+    /// LiveSplit worker can still apply a quick pause+resume pair that happens
+    /// between two of its wakeups.
+    pub fn set_desired_paused_at(&self, paused: bool, timestamp: i64) {
         let mut inner = self
             .inner
             .lock()
@@ -152,9 +178,25 @@ impl SharedState {
             return;
         }
         inner.desired_paused = paused;
+        if inner.pause_transitions.len() >= MAX_PAUSE_TRANSITIONS {
+            inner.pause_transitions.pop_front();
+        }
+        inner
+            .pause_transitions
+            .push_back(PauseTransition { paused, timestamp });
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();
+    }
+
+    /// Take all transitions recorded since the last drain. The worker sends
+    /// them in order; the latest `desired_paused` value remains authoritative.
+    pub fn drain_pause_transitions(&self) -> Vec<PauseTransition> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.pause_transitions.drain(..).collect()
     }
 
     pub fn apply_settings(&self, settings: Config) {
@@ -166,6 +208,9 @@ impl SharedState {
         if !settings.enabled {
             inner.desired_paused = false;
         }
+        // A settings change (re)connects the worker, which sends the current
+        // desired state. Old transitions must not be replayed afterwards.
+        inner.pause_transitions.clear();
         inner.settings = settings;
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
@@ -178,6 +223,9 @@ impl SharedState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.reconnect_generation = inner.reconnect_generation.wrapping_add(1);
+        // The reconnect sends the latest desired state; drop transitions that
+        // belonged to the old connection.
+        inner.pause_transitions.clear();
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();
@@ -190,6 +238,7 @@ impl SharedState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.shutdown = true;
         inner.desired_paused = false;
+        inner.pause_transitions.clear();
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();
@@ -299,6 +348,50 @@ mod tests {
 
         shared.set_desired_paused(true);
         assert_eq!(shared.snapshot().revision, revision + 1);
+    }
+
+    #[test]
+    fn pause_transitions_are_journalled_in_order() {
+        let shared = SharedState::new(Config::default());
+        shared.set_desired_paused_at(true, 10);
+        shared.set_desired_paused_at(true, 11);
+        shared.set_desired_paused_at(false, 20);
+
+        assert_eq!(
+            shared.drain_pause_transitions(),
+            vec![
+                PauseTransition {
+                    paused: true,
+                    timestamp: 10
+                },
+                PauseTransition {
+                    paused: false,
+                    timestamp: 20
+                }
+            ]
+        );
+        assert!(shared.drain_pause_transitions().is_empty());
+    }
+
+    #[test]
+    fn disabling_discards_pending_pause_transitions() {
+        let shared = SharedState::new(Config::default());
+        shared.set_desired_paused_at(true, 10);
+        shared.set_enabled(false);
+        shared.set_enabled(true);
+
+        assert!(shared.drain_pause_transitions().is_empty());
+        assert!(!shared.snapshot().desired_paused);
+    }
+
+    #[test]
+    fn shutdown_discards_pending_pause_transitions() {
+        let shared = SharedState::new(Config::default());
+        shared.set_desired_paused_at(true, 10);
+        shared.request_shutdown();
+
+        assert!(shared.drain_pause_transitions().is_empty());
+        assert!(!shared.snapshot().desired_paused);
     }
 
     #[test]

@@ -15,6 +15,17 @@ use crate::transport::Connection;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const PHASE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// While game time is paused for a load, poll more often so a timer started or
+/// reset during the load is noticed quickly.
+const LOADING_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+fn poll_interval(desired_paused: bool) -> Duration {
+    if desired_paused {
+        LOADING_POLL_INTERVAL
+    } else {
+        PHASE_POLL_INTERVAL
+    }
+}
 
 /// Owns one transport connection and tracks what was last sent.
 pub struct Controller {
@@ -178,12 +189,26 @@ impl Controller {
 /// tests supply an in-process mock.
 pub type Connector = dyn Fn(&LiveSplitConfig) -> io::Result<Box<dyn Connection>> + Send + Sync;
 
+fn mark_disconnected(
+    shared: &SharedState,
+    controller: &mut Controller,
+    last_connect_error: &mut Option<String>,
+    next_retry: &mut Instant,
+    reconnect_ms: u64,
+    context: &str,
+    error: io::Error,
+) {
+    controller.disconnect();
+    *last_connect_error = Some(error.to_string());
+    log_warn!("{context}: {error}");
+    shared.set_livesplit_status(LiveSplitStatus::Disconnected, error.to_string());
+    *next_retry = Instant::now() + Duration::from_millis(reconnect_ms);
+}
+
 pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
     log_info!("LiveSplit worker started");
     let initial = shared.snapshot();
     let mut controller = Controller::new(initial.settings.livesplit.clone());
-    let mut status_connected = false;
-    let mut last_revision = initial.revision;
     let mut last_reconnect_generation = initial.reconnect_generation;
     let mut last_connect_error: Option<String> = None;
     let mut next_retry = Instant::now();
@@ -199,7 +224,7 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
         if snapshot.reconnect_generation != last_reconnect_generation {
             last_reconnect_generation = snapshot.reconnect_generation;
             controller.disconnect();
-            status_connected = false;
+            shared.drain_pause_transitions();
             next_retry = Instant::now();
             next_poll = Instant::now();
         }
@@ -207,19 +232,23 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
         if snapshot.settings.livesplit != *controller.settings() {
             controller.disconnect();
             controller.apply_settings(snapshot.settings.livesplit.clone());
-            status_connected = false;
+            shared.drain_pause_transitions();
             next_retry = Instant::now();
             next_poll = Instant::now();
         }
 
-        let desired = snapshot.enabled && snapshot.desired_paused;
+        let mut desired = snapshot.enabled && snapshot.desired_paused;
+        let reconnect_ms = snapshot.settings.livesplit.reconnect_ms;
 
         if !controller.is_connected() {
+            // Transitions cannot be applied while disconnected. The latest
+            // desired state is sent as soon as the connection is established.
+            shared.drain_pause_transitions();
+
             if Instant::now() >= next_retry {
                 shared.set_livesplit_status(LiveSplitStatus::Connecting, "");
                 match controller.connect(desired, connector.as_ref()) {
                     Ok(()) => {
-                        status_connected = true;
                         last_connect_error = None;
                         shared.set_livesplit_status(
                             LiveSplitStatus::Connected,
@@ -230,11 +259,10 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                             ),
                         );
                         log_info!("Connected to LiveSplit via {}", controller.transport_name());
-                        next_poll = Instant::now() + PHASE_POLL_INTERVAL;
+                        next_poll = Instant::now() + poll_interval(desired);
                     }
                     Err(error) => {
                         controller.disconnect();
-                        status_connected = false;
                         let message = error.to_string();
                         if last_connect_error.as_deref() != Some(message.as_str()) {
                             log_warn!("LiveSplit connection failed: {message}");
@@ -246,50 +274,89 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
                             LiveSplitStatus::Disconnected,
                             format!("{}: {error}", controller.transport_name()),
                         );
-                        next_retry = Instant::now()
-                            + Duration::from_millis(snapshot.settings.livesplit.reconnect_ms);
+                        next_retry = Instant::now() + Duration::from_millis(reconnect_ms);
                     }
                 }
             }
-        } else if Instant::now() >= next_poll {
-            match controller.tick(desired, true) {
-                Ok(()) => {
-                    next_poll = Instant::now() + PHASE_POLL_INTERVAL;
-                    if !status_connected {
-                        status_connected = true;
-                    }
-                    shared.set_livesplit_status(
-                        LiveSplitStatus::Connected,
-                        format!(
-                            "{} ({})",
-                            controller.transport_name(),
-                            controller.phase().as_str()
-                        ),
+        } else {
+            // Apply every captured transition in order before doing anything
+            // that can block on the transport. This is what keeps the pause
+            // latency at one capture frame instead of one phase-poll interval.
+            let transitions = shared.drain_pause_transitions();
+            // Take a fresh snapshot after the drain. The snapshot from the top
+            // of the loop can be older than the transition that woke us; using
+            // its desired state here would immediately undo that transition.
+            let latest = shared.snapshot();
+            desired = latest.enabled && latest.desired_paused;
+
+            for transition in transitions {
+                if !latest.enabled {
+                    break;
+                }
+                if let Err(error) = controller.send_desired(transition.paused) {
+                    mark_disconnected(
+                        &shared,
+                        &mut controller,
+                        &mut last_connect_error,
+                        &mut next_retry,
+                        reconnect_ms,
+                        "LiveSplit command failed",
+                        error,
+                    );
+                    break;
+                }
+            }
+
+            // Reconcile with the latest desired state. This covers a dropped
+            // transition, a settings change, and the first frame after a
+            // reconnect.
+            if controller.is_connected() {
+                if let Err(error) = controller.send_desired(desired) {
+                    mark_disconnected(
+                        &shared,
+                        &mut controller,
+                        &mut last_connect_error,
+                        &mut next_retry,
+                        reconnect_ms,
+                        "LiveSplit command failed",
+                        error,
                     );
                 }
-                Err(error) => {
-                    controller.disconnect();
-                    status_connected = false;
-                    last_connect_error = Some(error.to_string());
-                    log_warn!("LiveSplit connection lost: {error}");
-                    shared.set_livesplit_status(LiveSplitStatus::Disconnected, error.to_string());
-                    next_retry = Instant::now()
-                        + Duration::from_millis(snapshot.settings.livesplit.reconnect_ms);
-                }
             }
-        } else if snapshot.revision != last_revision {
-            if let Err(error) = controller.send_desired(desired) {
-                controller.disconnect();
-                status_connected = false;
-                last_connect_error = Some(error.to_string());
-                log_warn!("LiveSplit command failed: {error}");
-                shared.set_livesplit_status(LiveSplitStatus::Disconnected, error.to_string());
-                next_retry = Instant::now()
-                    + Duration::from_millis(snapshot.settings.livesplit.reconnect_ms);
+
+            if controller.is_connected() && Instant::now() >= next_poll {
+                match controller.tick(desired, true) {
+                    Ok(()) => {
+                        next_poll = Instant::now() + poll_interval(desired);
+                        shared.set_livesplit_status(
+                            LiveSplitStatus::Connected,
+                            format!(
+                                "{} ({})",
+                                controller.transport_name(),
+                                controller.phase().as_str()
+                            ),
+                        );
+                    }
+                    Err(error) => mark_disconnected(
+                        &shared,
+                        &mut controller,
+                        &mut last_connect_error,
+                        &mut next_retry,
+                        reconnect_ms,
+                        "LiveSplit connection lost",
+                        error,
+                    ),
+                }
             }
         }
 
         let now = Instant::now();
+        let interval = poll_interval(desired);
+        if controller.is_connected() && next_poll > now + interval {
+            // A transition into loading should tighten the cadence immediately
+            // instead of waiting for the old one-second poll deadline.
+            next_poll = now + interval;
+        }
         let next_wake = if controller.is_connected() {
             next_poll
         } else {
@@ -297,9 +364,12 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
         };
         let timeout = next_wake
             .saturating_duration_since(now)
-            .min(PHASE_POLL_INTERVAL)
+            .min(interval)
             .max(Duration::from_millis(20));
-        last_revision = shared.wait_for_revision(snapshot.revision, timeout);
+        // Deliberately do not store the returned revision: the wake itself is
+        // the signal that the snapshot must be rebuilt and the desired state
+        // re-sent.
+        let _ = shared.wait_for_revision(snapshot.revision, timeout);
     }
 }
 
@@ -455,5 +525,112 @@ mod tests {
         assert!(!controller.is_connected());
         assert_eq!(controller.settings().transport, TransportKind::Tcp);
         assert!(!controller.apply_settings(settings));
+    }
+
+    struct RecordingConnection {
+        commands: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Connection for RecordingConnection {
+        fn send_command(&mut self, command: &str) -> io::Result<()> {
+            self.commands
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(command.to_string());
+            Ok(())
+        }
+
+        fn read_response(&mut self) -> io::Result<String> {
+            Ok("Running".into())
+        }
+
+        fn set_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn wait_for_commands(
+        commands: &Arc<Mutex<Vec<String>>>,
+        timeout: Duration,
+        predicate: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let seen = commands
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            if predicate(&seen) {
+                return seen;
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for LiveSplit commands; saw {seen:?}");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn state_changes_are_applied_without_waiting_for_the_phase_poll() {
+        let shared = SharedState::new(crate::config::Config::default());
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let connector_commands = commands.clone();
+        let connector: Arc<Connector> = Arc::new(move |_settings| {
+            Ok(Box::new(RecordingConnection {
+                commands: connector_commands.clone(),
+            }))
+        });
+
+        let worker_shared = shared.clone();
+        let worker = std::thread::spawn(move || run(worker_shared, connector));
+
+        wait_for_commands(&commands, Duration::from_secs(2), |seen| {
+            seen.iter()
+                .any(|command| command == GET_CURRENT_TIMER_PHASE)
+        });
+        commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+
+        shared.set_desired_paused_at(true, 10);
+        wait_for_commands(&commands, Duration::from_millis(400), |seen| {
+            seen.iter().any(|command| command == PAUSE_GAME_TIME)
+        });
+
+        commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        shared.set_desired_paused_at(false, 20);
+        wait_for_commands(&commands, Duration::from_millis(400), |seen| {
+            seen.iter().any(|command| command == UNPAUSE_GAME_TIME)
+        });
+
+        commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        shared.set_desired_paused_at(true, 30);
+        shared.set_desired_paused_at(false, 40);
+        let seen = wait_for_commands(&commands, Duration::from_millis(400), |seen| {
+            seen.iter().any(|command| command == PAUSE_GAME_TIME)
+                && seen.iter().any(|command| command == UNPAUSE_GAME_TIME)
+        });
+        let pause = seen
+            .iter()
+            .position(|command| command == PAUSE_GAME_TIME)
+            .expect("pause command");
+        let unpause = seen
+            .iter()
+            .position(|command| command == UNPAUSE_GAME_TIME)
+            .expect("unpause command");
+        assert!(
+            pause < unpause,
+            "pause must be sent before resume: {seen:?}"
+        );
+
+        shared.request_shutdown();
+        worker.join().expect("worker exit");
     }
 }

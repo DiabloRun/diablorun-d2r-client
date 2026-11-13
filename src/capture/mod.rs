@@ -500,7 +500,7 @@ fn capture_session(
                     }
                 }
                 // Also covers the first frame after a restart or a lost window.
-                shared.set_desired_paused(runtime.loading);
+                shared.set_desired_paused_at(runtime.loading, frame.timestamp);
             }
             Ok(None) => {
                 if last_window_check.elapsed() >= Duration::from_secs(2) {
