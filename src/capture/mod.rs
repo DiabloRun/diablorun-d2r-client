@@ -57,15 +57,6 @@ enum Backend {
     Dxgi,
 }
 
-impl Backend {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Wgc => "WGC",
-            Self::Dxgi => "DXGI",
-        }
-    }
-}
-
 enum ActiveCapture {
     Wgc(WgcCapture),
     Dxgi(DxgiCapture),
@@ -112,7 +103,6 @@ struct Runtime {
     confirm: ConfirmState,
     loading: bool,
     had_capture: bool,
-    hint: Option<String>,
     black_since: Option<Instant>,
 }
 
@@ -212,7 +202,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
         confirm: ConfirmState::new(),
         loading: false,
         had_capture: false,
-        hint: None,
         black_since: None,
     };
     let mut backend = Backend::Wgc;
@@ -243,7 +232,6 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
 
             if runtime.had_capture {
                 shared.set_capture_status(CaptureStatus::Lost, "D2R window lost");
-                shared.set_hint(runtime.hint.clone());
             } else {
                 shared.set_capture_status(CaptureStatus::Searching, "waiting for D2R");
             }
@@ -265,7 +253,7 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
                     continue;
                 }
 
-                shared.set_capture_status(CaptureStatus::Error, format!("capture error: {error}"));
+                shared.set_capture_status(CaptureStatus::Error, error.to_string());
                 shared.set_desired_paused(false);
                 shared.wait_for_revision(snapshot.revision, Duration::from_secs(2));
                 continue;
@@ -273,10 +261,7 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
         };
 
         runtime.had_capture = true;
-        shared.set_capture_status(
-            CaptureStatus::Capturing,
-            capture_detail(expected_size, capture.kind(), runtime.loading),
-        );
+        shared.set_capture_status(CaptureStatus::Capturing, capture_detail(expected_size));
 
         let confirm_frames = snapshot.settings.detection.confirm_frames.max(1);
         let session_started = Instant::now();
@@ -397,19 +382,10 @@ fn capture_session(
                     let now = Instant::now();
                     let since = *runtime.black_since.get_or_insert(now);
                     if since.elapsed() >= Duration::from_secs(3) && backend == Backend::Wgc {
-                        let message = "Captured frames are black - switch D2R to Windowed or another Fullscreen mode";
-                        if runtime.hint.as_deref() != Some(message) {
-                            runtime.hint = Some(message.to_string());
-                            shared.set_hint(Some(message.to_string()));
-                        }
                         return BreakReason::BlackFallback;
                     }
                 } else {
                     runtime.black_since = None;
-                    if runtime.hint.is_some() {
-                        runtime.hint = None;
-                        shared.set_hint(None);
-                    }
                 }
 
                 // An all-black frame cannot contain a loading screen; the
@@ -428,7 +404,7 @@ fn capture_session(
                     runtime.loading = confirmed;
                     shared.set_capture_status(
                         CaptureStatus::Capturing,
-                        capture_detail(expected_size, backend, confirmed),
+                        capture_detail(expected_size),
                     );
                 }
                 // Also covers the first frame after a restart or a lost window.
@@ -461,13 +437,8 @@ fn capture_session(
                         shared.set_desired_paused_at(false, 0);
                         shared.set_capture_status(
                             CaptureStatus::Capturing,
-                            capture_detail(expected_size, backend, false),
+                            capture_detail(expected_size),
                         );
-                        let message = "No new frames - game time resumed";
-                        if runtime.hint.as_deref() != Some(message) {
-                            runtime.hint = Some(message.to_string());
-                            shared.set_hint(Some(message.to_string()));
-                        }
                     }
                 }
             }
@@ -476,13 +447,10 @@ fn capture_session(
     }
 }
 
-fn capture_detail(expected_size: (u32, u32), backend: Backend, loading: bool) -> String {
+fn capture_detail(expected_size: (u32, u32)) -> String {
     format!(
-        "D2R.exe {}x{} via {} ({})",
-        expected_size.0,
-        expected_size.1,
-        backend.label(),
-        if loading { "loading" } else { "playing" }
+        "Diablo II: Resurrected ({}x{})",
+        expected_size.0, expected_size.1
     )
 }
 

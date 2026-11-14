@@ -1,28 +1,31 @@
 //! Native Win32 settings dialog built from an in-memory dialog template.
 
 use std::mem::size_of;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DeleteObject, GetObjectW, FW_BOLD, HFONT, HGDIOBJ, LOGFONTW,
+    CreateFontIndirectW, DeleteObject, GetObjectW, GetSysColorBrush, SetBkMode, SetTextColor,
+    COLOR_3DFACE, FW_BOLD, HDC, HFONT, HGDIOBJ, LOGFONTW, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateDialogIndirectParamW, CreateWindowExW, DestroyWindow, EndDialog,
-    GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, LoadIconW, MapDialogRect,
-    MessageBoxW, SendMessageW, SetDlgItemTextW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowTextW, ShowWindow, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
-    ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL, MB_ICONWARNING, MB_OK, SW_SHOWNORMAL,
-    WM_GETFONT, WM_SETFONT, WM_SETICON, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, KillTimer,
+    LoadIconW, MapDialogRect, SendMessageW, SetDlgItemTextW, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL,
+    CB_SETCURSEL, ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL, SW_SHOWNORMAL, WM_GETFONT,
+    WM_SETFONT, WM_SETICON, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 #[cfg(test)]
 use windows::Win32::UI::WindowsAndMessaging::DialogBoxIndirectParamW;
 
 use crate::config::{Config, LiveSplitConfig, TransportKind};
+use crate::state::{CaptureStatus, LiveSplitStatus, SharedState};
 use crate::theme;
 use crate::transport;
 
@@ -35,32 +38,81 @@ const ID_PORT: i32 = 103;
 const ID_WS_PATH: i32 = 104;
 const ID_TEST: i32 = 106;
 const ID_TEST_STATUS: i32 = 107;
-const ID_SAVE: i32 = 130;
+const ID_TEST_ICON: i32 = 108;
+const ID_LIVESPLIT_STATUS: i32 = 109;
+const ID_LIVESPLIT_STATUS_ICON: i32 = 110;
+const ID_CAPTURE_STATUS: i32 = 111;
+const ID_CAPTURE_STATUS_ICON: i32 = 112;
 const ID_CLOSE: i32 = 131;
 
 const IDCANCEL: isize = 2;
 const IDCANCEL_ID: i32 = 2;
 
+/// SS_CENTER: center the icon glyph horizontally.
+const SS_CENTER: u32 = 0x0001;
 /// SS_CENTERIMAGE: vertically center static text inside its control rectangle.
 const SS_CENTERIMAGE: u32 = 0x0200;
+
+const WM_CTLCOLORSTATIC: u32 = 0x0138;
+const WM_TIMER: u32 = 0x0113;
+const STATUS_TIMER_ID: usize = 1;
+const STATUS_REFRESH_MS: u32 = 500;
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(400);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestStatus {
+    Clear,
+    Success,
+    Failure,
+}
+
+impl TestStatus {
+    fn glyph(self) -> &'static str {
+        match self {
+            Self::Clear => "",
+            Self::Success => "\u{2714}",
+            Self::Failure => "\u{2716}",
+        }
+    }
+
+    fn color(self) -> Option<COLORREF> {
+        match self {
+            Self::Clear => None,
+            Self::Success => Some(COLORREF(0x0053_A834)),
+            Self::Failure => Some(COLORREF(0x0035_43EA)),
+        }
+    }
+}
 
 struct DialogState {
     config: Config,
     parent: HWND,
+    shared: Arc<SharedState>,
     result: Option<Config>,
     modal: bool,
     bold_font: Option<HFONT>,
+    icon_font: Option<HFONT>,
+    status: TestStatus,
+    livesplit_row: TestStatus,
+    capture_row: TestStatus,
+    dirty_since: Option<Instant>,
 }
 
 /// Open the settings dialog without blocking the app's message loop.
-pub fn open(parent: HWND, current: &Config) -> Result<HWND, String> {
+pub fn open(parent: HWND, current: &Config, shared: Arc<SharedState>) -> Result<HWND, String> {
     theme::init();
     let state = Box::new(DialogState {
         config: current.clone(),
         parent,
+        shared,
         result: None,
         modal: false,
         bold_font: None,
+        icon_font: None,
+        status: TestStatus::Clear,
+        livesplit_row: TestStatus::Clear,
+        capture_row: TestStatus::Clear,
+        dirty_since: None,
     });
     let state_pointer = Box::into_raw(state);
     let template = build_template();
@@ -107,9 +159,15 @@ pub fn show(parent: HWND, current: &Config) -> Option<Config> {
     let mut state = DialogState {
         config: current.clone(),
         parent,
+        shared: SharedState::new(current.clone()),
         result: None,
         modal: true,
         bold_font: None,
+        icon_font: None,
+        status: TestStatus::Clear,
+        livesplit_row: TestStatus::Clear,
+        capture_row: TestStatus::Clear,
+        dirty_since: None,
     };
 
     let template = build_template();
@@ -146,7 +204,7 @@ fn build_template() -> Vec<u8> {
     template.extend_from_slice(&0i16.to_le_bytes()); // x
     template.extend_from_slice(&0i16.to_le_bytes()); // y
     template.extend_from_slice(&340i16.to_le_bytes()); // cx
-    template.extend_from_slice(&184i16.to_le_bytes()); // cy
+    template.extend_from_slice(&246i16.to_le_bytes()); // cy
     template.extend_from_slice(&0u16.to_le_bytes()); // menu
     template.extend_from_slice(&0u16.to_le_bytes()); // class
     for unit in "D2R LRT Tracker Settings".encode_utf16() {
@@ -191,6 +249,9 @@ unsafe extern "system" fn dialog_proc(
             }
             create_controls(hwnd, state);
             theme::apply(hwnd, theme::is_dark());
+            unsafe {
+                let _ = SetTimer(Some(hwnd), STATUS_TIMER_ID, STATUS_REFRESH_MS, None);
+            }
             LRESULT(1).0
         }
         0x0111 => {
@@ -203,65 +264,77 @@ unsafe extern "system" fn dialog_proc(
             };
 
             match id {
-                ID_SAVE => {
-                    if let Some(config) = read_ui(hwnd, state) {
-                        if let Err(error) = config.validate() {
-                            show_error(hwnd, &error);
-                            return 0;
-                        }
-                        state.config = config.clone();
-                        state.result = Some(config);
-                        set_save_enabled(hwnd, false);
-                        if !state.modal {
-                            let parent = state.parent;
-                            unsafe {
-                                let _ = SendMessageW(
-                                    parent,
-                                    WM_APP_SETTINGS_SAVED,
-                                    Some(WPARAM(hwnd.0 as usize)),
-                                    Some(LPARAM(0)),
-                                );
-                            }
-                        }
+                ID_CLOSE | IDCANCEL_ID => {
+                    save_current(hwnd, state);
+                    unsafe {
+                        close_dialog(hwnd, state);
                     }
                 }
-                ID_CLOSE | IDCANCEL_ID => unsafe {
-                    close_dialog(hwnd, state);
-                },
                 ID_TEST => {
                     if let Some(config) = read_ui(hwnd, state) {
                         if let Err(error) = config.validate() {
-                            set_text(hwnd, ID_TEST_STATUS, &format!("Invalid: {error}"));
+                            set_status(
+                                hwnd,
+                                state,
+                                TestStatus::Failure,
+                                &format!("Invalid LiveSplit settings: {error}"),
+                            );
                         } else {
-                            set_text(hwnd, ID_TEST_STATUS, "Testing...");
+                            set_status(
+                                hwnd,
+                                state,
+                                TestStatus::Clear,
+                                "Testing LiveSplit connection...",
+                            );
                             match transport::test_connection(&config.livesplit) {
-                                Ok(transport) => set_text(
+                                Ok(transport) => set_status(
                                     hwnd,
-                                    ID_TEST_STATUS,
-                                    &format!("Connected via {}", transport.as_str()),
+                                    state,
+                                    TestStatus::Success,
+                                    &format!("LiveSplit connected via {}", transport.as_str()),
                                 ),
-                                Err(error) => {
-                                    set_text(hwnd, ID_TEST_STATUS, &format!("Failed: {error}"))
-                                }
+                                Err(error) => set_status(hwnd, state, TestStatus::Failure, &error),
                             }
                         }
                     }
                 }
                 ID_TRANSPORT if code == 1 => {
                     update_control_states(hwnd);
-                    set_save_enabled(hwnd, true);
+                    state.dirty_since = Some(Instant::now());
                 }
                 ID_HOST | ID_PORT | ID_WS_PATH if code == 0x0300 => {
                     // EN_CHANGE: an edit box was modified.
-                    set_save_enabled(hwnd, true);
+                    state.dirty_since = Some(Instant::now());
+                }
+                ID_HOST | ID_PORT | ID_WS_PATH if code == 0x0200 => {
+                    // EN_KILLFOCUS: save before another control takes focus.
+                    if state.dirty_since.is_some() {
+                        save_current(hwnd, state);
+                    }
                 }
                 _ => {}
+            }
+            0
+        }
+        WM_TIMER => {
+            // WM_TIMER
+            if wparam.0 == STATUS_TIMER_ID {
+                if let Some(state) = unsafe { dialog_state(hwnd) } {
+                    update_live_status(hwnd, state);
+                    if state
+                        .dirty_since
+                        .is_some_and(|since| since.elapsed() >= AUTOSAVE_DELAY)
+                    {
+                        save_current(hwnd, state);
+                    }
+                }
             }
             0
         }
         0x0010 => {
             // WM_CLOSE
             if let Some(state) = unsafe { dialog_state(hwnd) } {
+                save_current(hwnd, state);
                 unsafe {
                     close_dialog(hwnd, state);
                 }
@@ -270,6 +343,9 @@ unsafe extern "system" fn dialog_proc(
         }
         0x0002 => {
             // WM_DESTROY
+            unsafe {
+                let _ = KillTimer(Some(hwnd), STATUS_TIMER_ID);
+            }
             if let Some(state) = unsafe { dialog_state(hwnd) } {
                 if !state.modal {
                     unsafe {
@@ -294,6 +370,9 @@ unsafe extern "system" fn dialog_proc(
                     if let Some(font) = state.bold_font {
                         let _ = DeleteObject(HGDIOBJ(font.0));
                     }
+                    if let Some(font) = state.icon_font {
+                        let _ = DeleteObject(HGDIOBJ(font.0));
+                    }
                     if !state.modal {
                         drop(Box::from_raw(pointer));
                     }
@@ -302,6 +381,13 @@ unsafe extern "system" fn dialog_proc(
             0
         }
         message if theme::is_control_color_message(message) => {
+            if message == WM_CTLCOLORSTATIC {
+                if let Some(state) = unsafe { dialog_state(hwnd) } {
+                    if let Some(status) = status_for_control(lparam, state) {
+                        return status_icon_color(status, wparam);
+                    }
+                }
+            }
             if let Some(result) = theme::control_color(message, wparam) {
                 return result;
             }
@@ -343,14 +429,31 @@ fn create_controls(hwnd: HWND, state: &mut DialogState) {
     let bold_font = create_bold_font(font);
     let section_font = bold_font.map_or(font, |bold| bold.0 as usize);
     state.bold_font = bold_font;
+    let icon_font = create_icon_font(font);
+    let icon_font_value = icon_font.map_or(font, |icon| icon.0 as usize);
+    state.icon_font = icon_font;
 
-    section(hwnd, "LiveSplit", 8, 8, section_font);
-    label(hwnd, "Transport:", 8, 26);
+    section(hwnd, "Status", 8, 8, section_font);
+    icon_static(
+        hwnd,
+        ID_LIVESPLIT_STATUS_ICON,
+        8,
+        28,
+        12,
+        12,
+        icon_font_value,
+    );
+    text(hwnd, ID_LIVESPLIT_STATUS, "", 24, 24, 308, 20, font);
+    icon_static(hwnd, ID_CAPTURE_STATUS_ICON, 8, 50, 12, 12, icon_font_value);
+    text(hwnd, ID_CAPTURE_STATUS, "", 24, 46, 308, 20, font);
+
+    section(hwnd, "LiveSplit", 8, 70, section_font);
+    label(hwnd, "Transport:", 8, 88);
     combo(
         hwnd,
         ID_TRANSPORT,
         95,
-        24,
+        86,
         210,
         60,
         &["Named pipe", "TCP", "WebSocket"],
@@ -362,48 +465,48 @@ fn create_controls(hwnd: HWND, state: &mut DialogState) {
         font,
     );
 
-    label(hwnd, "Host:", 8, 52);
+    label(hwnd, "Host:", 8, 114);
     edit(
         hwnd,
         ID_HOST,
         95,
-        50,
+        112,
         210,
         14,
         &state.config.livesplit.host,
         font,
     );
-    label(hwnd, "Port:", 8, 74);
+    label(hwnd, "Port:", 8, 136);
     edit(
         hwnd,
         ID_PORT,
         95,
-        72,
+        134,
         80,
         14,
         &state.config.livesplit.port.to_string(),
         font,
     );
-    label(hwnd, "WS path:", 8, 96);
+    label(hwnd, "WS path:", 8, 158);
     edit(
         hwnd,
         ID_WS_PATH,
         95,
-        94,
+        156,
         210,
         14,
         &state.config.livesplit.websocket_path,
         font,
     );
 
-    button(hwnd, ID_TEST, "Test connection", 8, 118, 82, 20, font);
-    text(hwnd, ID_TEST_STATUS, "Not tested", 95, 118, 235, 20, font);
+    button(hwnd, ID_TEST, "Test connection", 8, 180, 82, 20, font);
+    icon_static(hwnd, ID_TEST_ICON, 95, 184, 12, 12, icon_font_value);
+    text(hwnd, ID_TEST_STATUS, "", 108, 180, 222, 20, font);
 
-    button(hwnd, ID_SAVE, "Save", 170, 154, 60, 20, font);
-    button(hwnd, ID_CLOSE, "Close to tray", 238, 154, 94, 20, font);
+    button(hwnd, ID_CLOSE, "Close to tray", 238, 216, 94, 20, font);
 
+    update_live_status(hwnd, state);
     update_control_states(hwnd);
-    set_save_enabled(hwnd, false);
     unsafe {
         if let Ok(control) = GetDlgItem(Some(hwnd), ID_TRANSPORT) {
             let _ = SetFocus(Some(control));
@@ -439,6 +542,24 @@ fn text(hwnd: HWND, id: i32, value: &str, x: i32, y: i32, width: i32, height: i3
         width,
         height,
         SS_CENTERIMAGE,
+        0,
+    ) {
+        set_font(control, font);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn icon_static(hwnd: HWND, id: i32, x: i32, y: i32, width: i32, height: i32, font: usize) {
+    if let Some(control) = create(
+        hwnd,
+        w!("STATIC"),
+        "",
+        id,
+        x,
+        y,
+        width,
+        height,
+        SS_CENTER | SS_CENTERIMAGE,
         0,
     ) {
         set_font(control, font);
@@ -601,6 +722,33 @@ fn create_bold_font(font: usize) -> Option<HFONT> {
     }
 }
 
+fn create_icon_font(font: usize) -> Option<HFONT> {
+    if font == 0 {
+        return None;
+    }
+    let mut logfont = LOGFONTW::default();
+    let copied = unsafe {
+        GetObjectW(
+            HGDIOBJ(font as *mut _),
+            size_of::<LOGFONTW>() as i32,
+            Some(&mut logfont as *mut _ as *mut _),
+        )
+    };
+    if copied == 0 {
+        return None;
+    }
+    logfont.lfHeight = logfont.lfHeight.saturating_mul(4) / 3;
+    let face: Vec<u16> = "Segoe UI Symbol".encode_utf16().chain([0]).collect();
+    let length = face.len().min(logfont.lfFaceName.len());
+    logfont.lfFaceName[..length].copy_from_slice(&face[..length]);
+    let icon = unsafe { CreateFontIndirectW(&logfont) };
+    if icon.0.is_null() {
+        None
+    } else {
+        Some(icon)
+    }
+}
+
 fn update_control_states(hwnd: HWND) {
     let selection = unsafe {
         let Ok(control) = GetDlgItem(Some(hwnd), ID_TRANSPORT) else {
@@ -620,14 +768,6 @@ fn update_control_states(hwnd: HWND) {
         }
         if let Ok(control) = GetDlgItem(Some(hwnd), ID_WS_PATH) {
             let _ = EnableWindow(control, is_ws);
-        }
-    }
-}
-
-fn set_save_enabled(hwnd: HWND, enabled: bool) {
-    unsafe {
-        if let Ok(control) = GetDlgItem(Some(hwnd), ID_SAVE) {
-            let _ = EnableWindow(control, enabled);
         }
     }
 }
@@ -687,15 +827,121 @@ fn set_text(hwnd: HWND, id: i32, value: &str) {
     }
 }
 
-fn show_error(hwnd: HWND, message: &str) {
-    let message: Vec<u16> = message.encode_utf16().chain([0]).collect();
-    unsafe {
-        let _ = MessageBoxW(
-            Some(hwnd),
-            PCWSTR(message.as_ptr()),
-            w!("D2R LRT Tracker"),
-            MB_OK | MB_ICONWARNING,
+fn save_current(hwnd: HWND, state: &mut DialogState) {
+    let Some(config) = read_ui(hwnd, state) else {
+        state.dirty_since = None;
+        return;
+    };
+    state.dirty_since = None;
+    if config.validate().is_err() || config == state.config {
+        return;
+    }
+
+    state.config = config.clone();
+    state.result = Some(config);
+    if !state.modal {
+        unsafe {
+            let _ = SendMessageW(
+                state.parent,
+                WM_APP_SETTINGS_SAVED,
+                Some(WPARAM(hwnd.0 as usize)),
+                Some(LPARAM(0)),
+            );
+        }
+    }
+}
+
+fn set_status(hwnd: HWND, state: &mut DialogState, status: TestStatus, value: &str) {
+    state.status = status;
+    set_status_row(hwnd, ID_TEST_ICON, ID_TEST_STATUS, status, value);
+}
+
+fn set_status_row(hwnd: HWND, icon_id: i32, text_id: i32, status: TestStatus, value: &str) {
+    set_text(hwnd, text_id, value);
+    set_text(hwnd, icon_id, status.glyph());
+}
+
+fn update_live_status(hwnd: HWND, state: &mut DialogState) {
+    let status = state.shared.status();
+
+    let (livesplit_row, livesplit_text) = match status.livesplit_status {
+        LiveSplitStatus::Connected => (TestStatus::Success, "LiveSplit Connected".to_string()),
+        LiveSplitStatus::Connecting | LiveSplitStatus::Disconnected => {
+            (TestStatus::Failure, "LiveSplit Disconnected".to_string())
+        }
+    };
+    if state.livesplit_row != livesplit_row || get_text(hwnd, ID_LIVESPLIT_STATUS) != livesplit_text
+    {
+        state.livesplit_row = livesplit_row;
+        set_status_row(
+            hwnd,
+            ID_LIVESPLIT_STATUS_ICON,
+            ID_LIVESPLIT_STATUS,
+            livesplit_row,
+            &livesplit_text,
         );
+    }
+
+    let (capture_row, capture_text) = match status.capture_status {
+        CaptureStatus::Capturing => (
+            TestStatus::Success,
+            format!("Capturing {}", status.capture_detail),
+        ),
+        CaptureStatus::Searching => (
+            TestStatus::Failure,
+            "Waiting for Diablo II: Resurrected".to_string(),
+        ),
+        CaptureStatus::Lost => (
+            TestStatus::Failure,
+            "Diablo II: Resurrected capture lost".to_string(),
+        ),
+        CaptureStatus::Error => (
+            TestStatus::Failure,
+            if status.capture_detail.is_empty() {
+                "Diablo II: Resurrected capture error".to_string()
+            } else {
+                format!(
+                    "Diablo II: Resurrected capture error: {}",
+                    status.capture_detail
+                )
+            },
+        ),
+        CaptureStatus::Off => (
+            TestStatus::Failure,
+            "Diablo II: Resurrected capture off".to_string(),
+        ),
+    };
+    if state.capture_row != capture_row || get_text(hwnd, ID_CAPTURE_STATUS) != capture_text {
+        state.capture_row = capture_row;
+        set_status_row(
+            hwnd,
+            ID_CAPTURE_STATUS_ICON,
+            ID_CAPTURE_STATUS,
+            capture_row,
+            &capture_text,
+        );
+    }
+}
+
+fn status_for_control(lparam: LPARAM, state: &DialogState) -> Option<TestStatus> {
+    let control = HWND(lparam.0 as *mut _);
+    match unsafe { GetDlgCtrlID(control) } {
+        ID_TEST_ICON => Some(state.status),
+        ID_LIVESPLIT_STATUS_ICON => Some(state.livesplit_row),
+        ID_CAPTURE_STATUS_ICON => Some(state.capture_row),
+        _ => None,
+    }
+}
+
+fn status_icon_color(status: TestStatus, wparam: WPARAM) -> isize {
+    let hdc = HDC(wparam.0 as *mut _);
+    unsafe {
+        let background = theme::control_color(WM_CTLCOLORSTATIC, wparam);
+        if let Some(color) = status.color() {
+            SetTextColor(hdc, color);
+        }
+        SetBkMode(hdc, TRANSPARENT);
+        background.unwrap_or_else(|| GetSysColorBrush(COLOR_3DFACE).0 as isize)
     }
 }
 
@@ -705,17 +951,25 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, IsWindow, PostMessageW, WM_CLOSE, WM_COMMAND,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
 
     static DIALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn status_glyphs_match_the_result() {
+        assert_eq!(TestStatus::Clear.glyph(), "");
+        assert_eq!(TestStatus::Success.glyph(), "\u{2714}");
+        assert_eq!(TestStatus::Failure.glyph(), "\u{2716}");
+        assert!(TestStatus::Success.color().is_some());
+        assert!(TestStatus::Failure.color().is_some());
+        assert!(TestStatus::Clear.color().is_none());
+    }
 
     fn find_dialog() -> Option<HWND> {
         unsafe {
             let hwnd = FindWindowW(w!("#32770"), w!("D2R LRT Tracker Settings")).ok()?;
             // The window exists before WM_INITDIALOG has created its controls.
-            GetDlgItem(Some(hwnd), ID_SAVE).ok()?;
+            GetDlgItem(Some(hwnd), ID_CLOSE).ok()?;
             Some(hwnd)
         }
     }
@@ -748,7 +1002,7 @@ mod tests {
 
     #[test]
     #[ignore = "drives a native dialog; run with --ignored --test-threads=1"]
-    fn dialog_saves_edited_values() {
+    fn dialog_autosaves_edited_values() {
         let _guard = DIALOG_TEST_LOCK.lock().expect("dialog test lock");
         let thread = std::thread::spawn(|| show(HWND::default(), &Config::default()));
 
@@ -758,14 +1012,8 @@ mod tests {
             if let Some(hwnd) = find_dialog() {
                 unsafe {
                     let _ = SetDlgItemTextW(hwnd, ID_HOST, w!("192.168.1.10"));
-                    let _ =
-                        PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(ID_SAVE as usize), LPARAM(0));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                assert!(
-                    unsafe { IsWindow(Some(hwnd)).as_bool() },
-                    "Save should keep the dialog open"
-                );
+                std::thread::sleep(std::time::Duration::from_millis(700));
                 unsafe {
                     let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
@@ -781,7 +1029,7 @@ mod tests {
 
     #[test]
     #[ignore = "drives a native dialog; run with --ignored --test-threads=1"]
-    fn dialog_rejects_invalid_port_without_closing() {
+    fn dialog_discards_invalid_edits() {
         let _guard = DIALOG_TEST_LOCK.lock().expect("dialog test lock");
         let thread = std::thread::spawn(|| show(HWND::default(), &Config::default()));
 
@@ -791,27 +1039,13 @@ mod tests {
             if let Some(hwnd) = find_dialog() {
                 unsafe {
                     let _ = SetDlgItemTextW(hwnd, ID_PORT, w!("0"));
-                    let _ =
-                        PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(ID_SAVE as usize), LPARAM(0));
+                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
                 found = true;
                 break;
             }
         }
         assert!(found, "settings dialog window was not created");
-
-        // The validation error opens a message box; close it, then cancel the
-        // still-open dialog so the test thread can finish.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        unsafe {
-            if let Ok(message) = FindWindowW(w!("#32770"), w!("D2R LRT Tracker")) {
-                let _ = PostMessageW(Some(message), WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
-            if let Some(dialog) = find_dialog() {
-                let _ = PostMessageW(Some(dialog), WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
-        }
-
         assert!(thread.join().expect("dialog thread").is_none());
     }
 }

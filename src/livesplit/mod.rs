@@ -56,14 +56,6 @@ impl Controller {
         self.connection.is_some()
     }
 
-    pub fn phase(&self) -> TimerPhase {
-        self.phase
-    }
-
-    pub fn transport_name(&self) -> &'static str {
-        self.settings.transport.as_str()
-    }
-
     pub fn disconnect(&mut self) {
         self.connection = None;
         self.last_sent_paused = None;
@@ -182,14 +174,9 @@ impl Controller {
 /// tests supply an in-process mock.
 pub type Connector = dyn Fn(&LiveSplitConfig) -> io::Result<Box<dyn Connection>> + Send + Sync;
 
-fn mark_disconnected(
-    shared: &SharedState,
-    controller: &mut Controller,
-    next_retry: &mut Instant,
-    error: io::Error,
-) {
+fn mark_disconnected(shared: &SharedState, controller: &mut Controller, next_retry: &mut Instant) {
     controller.disconnect();
-    shared.set_livesplit_status(LiveSplitStatus::Disconnected, error.to_string());
+    shared.set_livesplit_status(LiveSplitStatus::Disconnected);
     *next_retry = Instant::now() + RECONNECT_DELAY;
 }
 
@@ -230,25 +217,15 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
             shared.drain_pause_transitions();
 
             if Instant::now() >= next_retry {
-                shared.set_livesplit_status(LiveSplitStatus::Connecting, "");
+                shared.set_livesplit_status(LiveSplitStatus::Connecting);
                 match controller.connect(desired, connector.as_ref()) {
                     Ok(()) => {
-                        shared.set_livesplit_status(
-                            LiveSplitStatus::Connected,
-                            format!(
-                                "{} ({})",
-                                controller.transport_name(),
-                                controller.phase().as_str()
-                            ),
-                        );
+                        shared.set_livesplit_status(LiveSplitStatus::Connected);
                         next_poll = Instant::now() + poll_interval(desired);
                     }
-                    Err(error) => {
+                    Err(_) => {
                         controller.disconnect();
-                        shared.set_livesplit_status(
-                            LiveSplitStatus::Disconnected,
-                            format!("{}: {error}", controller.transport_name()),
-                        );
+                        shared.set_livesplit_status(LiveSplitStatus::Disconnected);
                         next_retry = Instant::now() + RECONNECT_DELAY;
                     }
                 }
@@ -265,8 +242,8 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
             desired = latest.desired_paused;
 
             for transition in transitions {
-                if let Err(error) = controller.send_desired(transition.paused) {
-                    mark_disconnected(&shared, &mut controller, &mut next_retry, error);
+                if controller.send_desired(transition.paused).is_err() {
+                    mark_disconnected(&shared, &mut controller, &mut next_retry);
                     break;
                 }
             }
@@ -274,28 +251,17 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
             // Reconcile with the latest desired state. This covers a dropped
             // transition, a settings change, and the first frame after a
             // reconnect.
-            if controller.is_connected() {
-                if let Err(error) = controller.send_desired(desired) {
-                    mark_disconnected(&shared, &mut controller, &mut next_retry, error);
-                }
+            if controller.is_connected() && controller.send_desired(desired).is_err() {
+                mark_disconnected(&shared, &mut controller, &mut next_retry);
             }
 
             if controller.is_connected() && Instant::now() >= next_poll {
                 match controller.tick(desired, true) {
                     Ok(()) => {
                         next_poll = Instant::now() + poll_interval(desired);
-                        shared.set_livesplit_status(
-                            LiveSplitStatus::Connected,
-                            format!(
-                                "{} ({})",
-                                controller.transport_name(),
-                                controller.phase().as_str()
-                            ),
-                        );
+                        shared.set_livesplit_status(LiveSplitStatus::Connected);
                     }
-                    Err(error) => {
-                        mark_disconnected(&shared, &mut controller, &mut next_retry, error)
-                    }
+                    Err(_) => mark_disconnected(&shared, &mut controller, &mut next_retry),
                 }
             }
         }

@@ -10,10 +10,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetActiveWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    FindWindowW, GetMessageW, GetWindowLongPtrW, IsWindow, KillTimer, MessageBoxW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-    ShowWindow, TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_OK, SW_SHOWNORMAL,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_TIMER, WNDCLASSEXW,
+    FindWindowW, GetMessageW, GetWindowLongPtrW, IsWindow, MessageBoxW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
+    TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_OK, SW_SHOWNORMAL, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WNDCLASSEXW,
 };
 
 use crate::config::{self, Config};
@@ -27,7 +27,6 @@ const WINDOW_CLASS: PCWSTR = w!("D2RLrtTrackerMessageWindow");
 const WINDOW_TITLE: PCWSTR = w!("D2R LRT Tracker");
 const WM_APP_OPEN_SETTINGS: u32 = 0x8000 + 2;
 const WM_APP_SHUTDOWN: u32 = 0x8000 + 3;
-const TIMER_ID: usize = 1;
 
 static MESSAGE_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
@@ -110,7 +109,6 @@ struct App {
     config: Config,
     config_path: PathBuf,
     tray: Option<TrayIcon>,
-    last_tooltip: Option<String>,
     capture_thread: Option<std::thread::JoinHandle<()>>,
     livesplit_thread: Option<std::thread::JoinHandle<()>>,
     stopped: bool,
@@ -126,7 +124,6 @@ impl App {
             config,
             config_path,
             tray: None,
-            last_tooltip: None,
             capture_thread: None,
             livesplit_thread: None,
             stopped: false,
@@ -163,15 +160,9 @@ impl App {
         }
 
         if !options.no_tray {
-            let tooltip = self.shared.tooltip();
             let mut tray = TrayIcon::new(self.hwnd);
-            tray.add(&tooltip);
+            tray.add();
             self.tray = Some(tray);
-            self.last_tooltip = Some(tooltip);
-
-            unsafe {
-                let _ = SetTimer(Some(self.hwnd), TIMER_ID, 500, None);
-            }
 
             // Show the connection settings immediately on a normal launch.
             // Headless `--no-tray` runs skip this along with the tray icon.
@@ -189,10 +180,6 @@ impl App {
 
         if let Some(tray) = self.tray.as_mut() {
             tray.remove();
-        }
-        self.last_tooltip = None;
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_ID);
         }
 
         if let Some(thread) = self.livesplit_thread.take() {
@@ -217,7 +204,7 @@ impl App {
             self.settings_hwnd = None;
         }
 
-        match settings_dialog::open(self.hwnd, &self.config) {
+        match settings_dialog::open(self.hwnd, &self.config, Arc::clone(&self.shared)) {
             Ok(hwnd) => self.settings_hwnd = Some(hwnd),
             Err(error) => show_error_message(
                 self.hwnd,
@@ -246,23 +233,11 @@ impl App {
         self.shared.apply_settings(new_config.clone());
         self.config = new_config;
         self.save_config();
-        self.update_tooltip();
     }
 
     fn save_config(&self) {
         if let Err(error) = config::save_config(&self.config_path, &self.config) {
             show_error_message(self.hwnd, &format!("Could not save config: {error}"));
-        }
-    }
-
-    fn update_tooltip(&mut self) {
-        let Some(tray) = self.tray.as_mut() else {
-            return;
-        };
-        let tooltip = self.shared.tooltip();
-        if self.last_tooltip.as_deref() != Some(tooltip.as_str()) {
-            tray.set_tooltip(&tooltip);
-            self.last_tooltip = Some(tooltip);
         }
     }
 
@@ -285,9 +260,7 @@ impl App {
 
     fn taskbar_created(&mut self) {
         if let Some(tray) = self.tray.as_mut() {
-            let tooltip = self.shared.tooltip();
-            tray.recreate(&tooltip);
-            self.last_tooltip = Some(tooltip);
+            tray.recreate();
         }
     }
 }
@@ -346,11 +319,6 @@ unsafe extern "system" fn window_proc(
             unsafe {
                 let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             }
-            return LRESULT(0);
-        }
-
-        if message == WM_TIMER && wparam.0 == TIMER_ID {
-            app.update_tooltip();
             return LRESULT(0);
         }
 

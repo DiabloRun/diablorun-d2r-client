@@ -47,27 +47,57 @@ pub fn connect_with_timeout(
 /// Connect with the supplied settings, send `ping`, and wait for `pong`.
 /// Used by the settings dialog's Test connection button.
 pub fn test_connection(settings: &LiveSplitConfig) -> Result<TransportKind, String> {
-    let mut connection =
-        connect_with_timeout(settings, Duration::from_millis(1_500)).map_err(|error| {
-            format!(
-                "Failed to connect via {}: {error}",
-                settings.transport.as_str()
-            )
-        })?;
+    let mut connection = connect_with_timeout(settings, Duration::from_millis(1_500))
+        .map_err(|_| connection_failure(settings))?;
 
     connection
         .set_timeout(Duration::from_millis(1_500))
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| connection_failure(settings))?;
     connection
         .send_command(crate::livesplit::protocol::PING)
-        .map_err(|error| format!("Failed to send ping: {error}"))?;
+        .map_err(|_| connection_failure(settings))?;
     let response = connection
         .read_response()
-        .map_err(|error| format!("Failed to read ping response: {error}"))?;
+        .map_err(|_| connection_failure(settings))?;
 
     if response.trim() == "pong" {
         Ok(settings.transport)
     } else {
-        Err(format!("Unexpected ping response: {response}"))
+        Err(format!("Unexpected LiveSplit ping response: {response}"))
+    }
+}
+
+fn connection_failure(settings: &LiveSplitConfig) -> String {
+    match settings.transport {
+        TransportKind::Pipe => "Connection failed: is LiveSplit opened?",
+        TransportKind::Tcp => "Connection failed: start LiveSplit's TCP server.",
+        TransportKind::WebSocket => "Connection failed: start LiveSplit's WebSocket server.",
+    }
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_message_matches_the_transport() {
+        let mut settings = LiveSplitConfig::default();
+        assert_eq!(
+            connection_failure(&settings),
+            "Connection failed: is LiveSplit opened?"
+        );
+
+        settings.transport = TransportKind::Tcp;
+        assert_eq!(
+            connection_failure(&settings),
+            "Connection failed: start LiveSplit's TCP server."
+        );
+
+        settings.transport = TransportKind::WebSocket;
+        assert_eq!(
+            connection_failure(&settings),
+            "Connection failed: start LiveSplit's WebSocket server."
+        );
     }
 }

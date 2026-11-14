@@ -28,33 +28,11 @@ pub enum CaptureStatus {
     Error,
 }
 
-impl CaptureStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Searching => "waiting for D2R",
-            Self::Capturing => "capturing",
-            Self::Lost => "capture lost",
-            Self::Error => "capture error",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveSplitStatus {
     Disconnected,
     Connecting,
     Connected,
-}
-
-impl LiveSplitStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Disconnected => "disconnected",
-            Self::Connecting => "connecting",
-            Self::Connected => "connected",
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -64,6 +42,13 @@ pub struct Snapshot {
     pub revision: u64,
     pub reconnect_generation: u64,
     pub shutdown: bool,
+}
+
+#[derive(Clone)]
+pub struct StatusSnapshot {
+    pub capture_status: CaptureStatus,
+    pub capture_detail: String,
+    pub livesplit_status: LiveSplitStatus,
 }
 
 struct Inner {
@@ -76,8 +61,6 @@ struct Inner {
     capture_status: CaptureStatus,
     capture_detail: String,
     livesplit_status: LiveSplitStatus,
-    livesplit_detail: String,
-    hint: Option<String>,
 }
 
 pub struct SharedState {
@@ -98,8 +81,6 @@ impl SharedState {
                 capture_status: CaptureStatus::Searching,
                 capture_detail: String::new(),
                 livesplit_status: LiveSplitStatus::Disconnected,
-                livesplit_detail: String::new(),
-                hint: None,
             }),
             changed: Condvar::new(),
         })
@@ -211,48 +192,24 @@ impl SharedState {
         inner.capture_detail = detail.into();
     }
 
-    pub fn set_livesplit_status(&self, status: LiveSplitStatus, detail: impl Into<String>) {
+    pub fn set_livesplit_status(&self, status: LiveSplitStatus) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.livesplit_status = status;
-        inner.livesplit_detail = detail.into();
     }
 
-    pub fn set_hint(&self, hint: Option<String>) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.hint = hint;
-    }
-
-    pub fn tooltip(&self) -> String {
+    pub fn status(&self) -> StatusSnapshot {
         let inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut text = format!(
-            "D2R: {} | LiveSplit: {}",
-            inner.capture_status.label(),
-            inner.livesplit_status.label()
-        );
-
-        if let Some(hint) = &inner.hint {
-            text.push_str(" | ");
-            text.push_str(hint);
-        } else if !inner.capture_detail.is_empty() {
-            text.push_str(" | ");
-            text.push_str(&inner.capture_detail);
+        StatusSnapshot {
+            capture_status: inner.capture_status,
+            capture_detail: inner.capture_detail.clone(),
+            livesplit_status: inner.livesplit_status,
         }
-
-        if !inner.livesplit_detail.is_empty() {
-            text.push_str(" | ");
-            text.push_str(&inner.livesplit_detail);
-        }
-
-        text
     }
 
     /// Wait until the revision changes, the timeout expires, or shutdown is
@@ -342,13 +299,17 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_reports_both_halves() {
+    fn status_reports_both_halves() {
         let shared = SharedState::new(Config::default());
-        shared.set_capture_status(CaptureStatus::Capturing, "D2R.exe 1920x1080");
-        shared.set_livesplit_status(LiveSplitStatus::Connected, "pipe");
-        let tooltip = shared.tooltip();
-        assert!(tooltip.contains("D2R: capturing"));
-        assert!(tooltip.contains("LiveSplit: connected"));
-        assert!(tooltip.contains("pipe"));
+        shared.set_capture_status(
+            CaptureStatus::Capturing,
+            "Diablo II: Resurrected (1920x1080)",
+        );
+        shared.set_livesplit_status(LiveSplitStatus::Connected);
+
+        let status = shared.status();
+        assert_eq!(status.capture_status, CaptureStatus::Capturing);
+        assert_eq!(status.capture_detail, "Diablo II: Resurrected (1920x1080)");
+        assert_eq!(status.livesplit_status, LiveSplitStatus::Connected);
     }
 }

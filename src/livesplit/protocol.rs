@@ -31,16 +31,6 @@ impl TimerPhase {
     pub fn is_running(self) -> bool {
         matches!(self, Self::Running)
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NotRunning => "NotRunning",
-            Self::Running => "Running",
-            Self::Paused => "Paused",
-            Self::Ended => "Ended",
-            Self::Unknown => "Unknown",
-        }
-    }
 }
 
 /// Strip transport framing and turn LiveSplit's `-` null response into `None`.

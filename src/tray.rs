@@ -21,6 +21,8 @@ pub const MENU_SETTINGS: usize = 102;
 pub const MENU_RECONNECT: usize = 103;
 pub const MENU_QUIT: usize = 105;
 
+const TRAY_TITLE: &str = "D2R LRT Tracker";
+
 pub struct TrayIcon {
     hwnd: HWND,
     icon: HICON,
@@ -53,8 +55,8 @@ impl TrayIcon {
         self.taskbar_created_message
     }
 
-    pub fn add(&mut self, tooltip: &str) {
-        let mut data = self.data(tooltip);
+    pub fn add(&mut self) {
+        let mut data = self.data();
         self.added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
         if !self.added {
             return;
@@ -65,25 +67,14 @@ impl TrayIcon {
         }
     }
 
-    pub fn recreate(&mut self, tooltip: &str) {
+    pub fn recreate(&mut self) {
         self.added = false;
-        self.add(tooltip);
-    }
-
-    pub fn set_tooltip(&mut self, tooltip: &str) {
-        if !self.added {
-            return;
-        }
-        let mut data = self.data(tooltip);
-        data.uFlags = NIF_TIP;
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
-        }
+        self.add();
     }
 
     pub fn remove(&mut self) {
         if self.added {
-            let data = self.data("");
+            let data = self.data();
             unsafe {
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
             }
@@ -91,7 +82,7 @@ impl TrayIcon {
         }
     }
 
-    fn data(&self, tooltip: &str) -> NOTIFYICONDATAW {
+    fn data(&self) -> NOTIFYICONDATAW {
         let mut data = NOTIFYICONDATAW {
             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: self.hwnd,
@@ -102,7 +93,7 @@ impl TrayIcon {
             ..Default::default()
         };
 
-        let encoded: Vec<u16> = tooltip.encode_utf16().take(127).collect();
+        let encoded: Vec<u16> = TRAY_TITLE.encode_utf16().take(127).collect();
         data.szTip[..encoded.len()].copy_from_slice(&encoded);
         data
     }

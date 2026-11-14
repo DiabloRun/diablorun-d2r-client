@@ -10,9 +10,10 @@ LiveSplit still handles the timing. This app just tells it when to pause.
    LiveSplit connection if needed, then close it to the tray.
 3. Start D2R. Loading screens pause game time automatically.
 
-The tray icon shows whether the game is being captured and whether LiveSplit is
-connected. Connection settings are in the tray menu. If LiveSplit isn't running,
-the app waits and reconnects by itself.
+The settings window shows whether the game is being captured and whether
+LiveSplit is connected. The tray icon tooltip is just the app title. Connection
+settings are in the tray menu. If LiveSplit isn't running, the app waits and
+reconnects by itself.
 
 Game time keeps running if D2R closes, minimizes, or capture is lost.
 

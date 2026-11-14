@@ -91,19 +91,26 @@ every two seconds.
 | TCP | `127.0.0.1:16834` | Enable LiveSplit's TCP server. |
 | WebSocket | `ws://127.0.0.1:16834/livesplit` | Enable LiveSplit's WebSocket server. Cannot run together with TCP. |
 
-Use **Settings → Test connection** to verify the entered values. If the named
-pipe reports **Access is denied**, LiveSplit is probably running elevated while
-the tracker is not. Run both at the same elevation, or restart LiveSplit without
-elevation. TCP and WebSocket are not affected by this named-pipe ACL difference.
+Use **Settings → Test connection** to verify the entered values. A failed pipe
+connection reports **Connection failed: is LiveSplit opened?**; TCP and
+WebSocket failures report **Connection failed: start LiveSplit's TCP server.**
+and **Connection failed: start LiveSplit's WebSocket server.** Start the
+corresponding server in LiveSplit's settings. If LiveSplit is running but the
+named pipe still fails, it is probably running elevated while the tracker is not.
+Run both at the same elevation, or restart LiveSplit without elevation. TCP and
+WebSocket are not affected by this named-pipe ACL difference.
 
 A native settings dialog for the connection (transport, host, port, and
 WebSocket path) opens on startup and from the tray menu. It follows the Windows
 light/dark app theme, has its own taskbar entry, and is brought to the
 foreground when opened.
-**Save** applies immediately without closing the dialog: the LiveSplit
-connection is re-established without restarting the app. **Close to tray**
-dismisses the settings window. Test connection uses the values currently in the
-dialog and a 1.5-second timeout.
+Connection changes are saved automatically: the LiveSplit connection is
+re-established without restarting the app. **Close to tray** dismisses the
+settings window. Test connection uses the values currently in the dialog and a
+1.5-second timeout, and shows a small green check or red cross next to the
+result. The same dialog shows live status rows for the LiveSplit connection and
+D2R capture, including the captured resolution. The tray icon tooltip is just
+the app title, **D2R LRT Tracker**.
 
 ## Configuration
 
