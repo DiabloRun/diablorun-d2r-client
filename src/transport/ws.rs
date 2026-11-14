@@ -36,7 +36,7 @@ impl WebSocketConnection {
                         }
                         Err(error) => {
                             last_error =
-                                Some(io::Error::new(io::ErrorKind::Other, error.to_string()));
+                                Some(io::Error::other(error.to_string()));
                         }
                     }
                 }
@@ -62,10 +62,10 @@ impl Connection for WebSocketConnection {
     fn send_command(&mut self, command: &str) -> io::Result<()> {
         self.socket
             .send(Message::text(command))
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+            .map_err(|error| io::Error::other(error.to_string()))?;
         self.socket
             .flush()
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))
+            .map_err(|error| io::Error::other(error.to_string()))
     }
 
     fn read_response(&mut self) -> io::Result<String> {
@@ -73,7 +73,7 @@ impl Connection for WebSocketConnection {
             let message = self
                 .socket
                 .read()
-                .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+                .map_err(|error| io::Error::other(error.to_string()))?;
 
             match message {
                 Message::Text(text) => return Ok(text.to_string()),
@@ -89,7 +89,7 @@ impl Connection for WebSocketConnection {
                 Message::Ping(payload) => {
                     self.socket
                         .send(Message::Pong(payload))
-                        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+                        .map_err(|error| io::Error::other(error.to_string()))?;
                 }
                 Message::Pong(_) | Message::Frame(_) => {}
             }

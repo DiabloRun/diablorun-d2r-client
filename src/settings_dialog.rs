@@ -5,32 +5,38 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DeleteObject, GetObjectW, GetSysColorBrush, SetBkMode, SetTextColor,
-    COLOR_3DFACE, FW_BOLD, HDC, HFONT, HGDIOBJ, LOGFONTW, TRANSPARENT,
+    CreateFontIndirectW, DeleteObject, GetMonitorInfoW, GetObjectW, GetSysColorBrush, HMONITOR,
+    LOGFONTW, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MonitorFromPoint,
+    MonitorFromWindow, SetBkMode, SetTextColor, COLOR_3DFACE, FW_BOLD, HDC, HFONT, HGDIOBJ,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateDialogIndirectParamW, CreateWindowExW, DestroyWindow, EndDialog,
-    GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, KillTimer,
-    LoadIconW, MapDialogRect, SendMessageW, SetDlgItemTextW, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL,
-    CB_SETCURSEL, ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL, SW_SHOWNORMAL, WM_GETFONT,
-    WM_SETFONT, WM_SETICON, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, KillTimer, LoadIconW, MapDialogRect, MoveWindow, SendMessageW, SetDlgItemTextW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CBN_SELCHANGE,
+    CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, EN_CHANGE, EN_KILLFOCUS,
+    ES_AUTOHSCROLL, GWLP_USERDATA, ICON_BIG, ICON_SMALL, SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_EXITSIZEMOVE, WM_GETFONT, WM_INITDIALOG, WM_NCDESTROY,
+    WM_SETFONT, WM_SETICON, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER, WS_CHILD,
+    WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 #[cfg(test)]
 use windows::Win32::UI::WindowsAndMessaging::DialogBoxIndirectParamW;
 
-use crate::config::{Config, LiveSplitConfig, TransportKind};
+use crate::config::{Config, TransportKind};
 use crate::state::{CaptureStatus, LiveSplitStatus, SharedState};
 use crate::theme;
 use crate::transport;
 
 pub const WM_APP_SETTINGS_SAVED: u32 = 0x8000 + 4;
 pub const WM_APP_SETTINGS_CLOSED: u32 = 0x8000 + 5;
+pub const WM_APP_SETTINGS_MOVED: u32 = 0x8000 + 6;
 
 const ID_TRANSPORT: i32 = 101;
 const ID_HOST: i32 = 102;
@@ -45,16 +51,13 @@ const ID_CAPTURE_STATUS: i32 = 111;
 const ID_CAPTURE_STATUS_ICON: i32 = 112;
 const ID_CLOSE: i32 = 131;
 
-const IDCANCEL: isize = 2;
-const IDCANCEL_ID: i32 = 2;
+const ID_CANCEL: i32 = 2;
 
 /// SS_CENTER: center the icon glyph horizontally.
 const SS_CENTER: u32 = 0x0001;
 /// SS_CENTERIMAGE: vertically center static text inside its control rectangle.
 const SS_CENTERIMAGE: u32 = 0x0200;
 
-const WM_CTLCOLORSTATIC: u32 = 0x0138;
-const WM_TIMER: u32 = 0x0113;
 const STATUS_TIMER_ID: usize = 1;
 const STATUS_REFRESH_MS: u32 = 500;
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(400);
@@ -224,10 +227,90 @@ pub fn take_result(hwnd: HWND) -> Option<Config> {
     unsafe { dialog_state(hwnd).and_then(|state| state.result.take()) }
 }
 
+/// Top-left corner of the dialog in physical screen coordinates.
+pub fn position(hwnd: HWND) -> Option<(i32, i32)> {
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    Some((rect.left, rect.top))
+}
+
+/// Move the dialog to its remembered position, clamped to the work area of the
+/// monitor containing that position. If the position is missing or no longer on
+/// a connected display (for example after unplugging a monitor), center the
+/// dialog instead.
+fn place_window(hwnd: HWND, state: &DialogState) {
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return;
+    }
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    if let (Some(x), Some(y)) = (state.config.window.settings_x, state.config.window.settings_y) {
+        let monitor = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL) };
+        if let Some(work) = monitor_work_area(monitor) {
+            let (x, y) = clamp_position(x, y, width, height, work);
+            unsafe {
+                let _ = MoveWindow(hwnd, x, y, width, height, false);
+            }
+            return;
+        }
+    }
+
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if let Some(work) = monitor_work_area(monitor) {
+        let x = work.left + (work.right - work.left - width) / 2;
+        let y = work.top + (work.bottom - work.top - height) / 2;
+        unsafe {
+            let _ = MoveWindow(hwnd, x, y, width, height, false);
+        }
+    }
+}
+
+fn monitor_work_area(monitor: HMONITOR) -> Option<RECT> {
+    if monitor.is_invalid() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        Some(info.rcWork)
+    } else {
+        None
+    }
+}
+
+fn clamp_position(x: i32, y: i32, width: i32, height: i32, work: RECT) -> (i32, i32) {
+    let max_x = (work.right - width).max(work.left);
+    let max_y = (work.bottom - height).max(work.top);
+    (x.clamp(work.left, max_x), y.clamp(work.top, max_y))
+}
+
+fn notify_moved(hwnd: HWND, state: &DialogState) {
+    if state.modal {
+        return;
+    }
+    unsafe {
+        let _ = SendMessageW(
+            state.parent,
+            WM_APP_SETTINGS_MOVED,
+            Some(WPARAM(hwnd.0 as usize)),
+            Some(LPARAM(0)),
+        );
+    }
+}
+
 fn build_template() -> Vec<u8> {
     let mut template = Vec::new();
-    // modal frame, setfont, shellfont, popup, caption, sysmenu
-    let style: u32 = 0x80 | 0x40 | 0x0800 | 0x8000_0000 | 0x00C0_0000 | 0x0008_0000;
+    // modal frame, setfont, popup, caption, sysmenu. The dialog is centered
+    // manually in `place_window` so a remembered position is not overridden by
+    // DS_CENTER when the dialog is shown.
+    let style: u32 = 0x80 | 0x40 | 0x8000_0000 | 0x00C0_0000 | 0x0008_0000;
     let ex_style: u32 = 0x0004_0000; // WS_EX_APPWINDOW: show the dialog in the taskbar
     template.extend_from_slice(&style.to_le_bytes());
     template.extend_from_slice(&ex_style.to_le_bytes());
@@ -257,8 +340,7 @@ unsafe extern "system" fn dialog_proc(
     lparam: LPARAM,
 ) -> isize {
     match message {
-        0x0110 => {
-            // WM_INITDIALOG
+        WM_INITDIALOG => {
             let state = unsafe { &mut *(lparam.0 as *mut DialogState) };
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as *mut DialogState as isize);
@@ -279,23 +361,23 @@ unsafe extern "system" fn dialog_proc(
                 }
             }
             create_controls(hwnd, state);
+            place_window(hwnd, state);
             theme::apply(hwnd, theme::is_dark());
             unsafe {
                 let _ = SetTimer(Some(hwnd), STATUS_TIMER_ID, STATUS_REFRESH_MS, None);
             }
             LRESULT(1).0
         }
-        0x0111 => {
-            // WM_COMMAND
+        WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as i32;
-            let code = ((wparam.0 >> 16) & 0xFFFF) as u16;
+            let code = ((wparam.0 >> 16) & 0xFFFF) as u32;
             let state = unsafe { dialog_state(hwnd) };
             let Some(state) = state else {
                 return 0;
             };
 
             match id {
-                ID_CLOSE | IDCANCEL_ID => {
+                ID_CLOSE | ID_CANCEL => {
                     save_current(hwnd, state);
                     unsafe {
                         close_dialog(hwnd, state);
@@ -336,16 +418,14 @@ unsafe extern "system" fn dialog_proc(
                         }
                     }
                 }
-                ID_TRANSPORT if code == 1 => {
+                ID_TRANSPORT if code == CBN_SELCHANGE => {
                     update_control_states(hwnd);
                     state.dirty_since = Some(Instant::now());
                 }
-                ID_HOST | ID_PORT | ID_WS_PATH if code == 0x0300 => {
-                    // EN_CHANGE: an edit box was modified.
+                ID_HOST | ID_PORT | ID_WS_PATH if code == EN_CHANGE => {
                     state.dirty_since = Some(Instant::now());
                 }
-                ID_HOST | ID_PORT | ID_WS_PATH if code == 0x0200 => {
-                    // EN_KILLFOCUS: save before another control takes focus.
+                ID_HOST | ID_PORT | ID_WS_PATH if code == EN_KILLFOCUS => {
                     if state.dirty_since.is_some() {
                         save_current(hwnd, state);
                     }
@@ -355,7 +435,6 @@ unsafe extern "system" fn dialog_proc(
             0
         }
         WM_TIMER => {
-            // WM_TIMER
             if wparam.0 == STATUS_TIMER_ID {
                 if let Some(state) = unsafe { dialog_state(hwnd) } {
                     update_live_status(hwnd, state);
@@ -369,8 +448,13 @@ unsafe extern "system" fn dialog_proc(
             }
             0
         }
-        0x0010 => {
-            // WM_CLOSE
+        WM_EXITSIZEMOVE => {
+            if let Some(state) = unsafe { dialog_state(hwnd) } {
+                notify_moved(hwnd, state);
+            }
+            0
+        }
+        WM_CLOSE => {
             if let Some(state) = unsafe { dialog_state(hwnd) } {
                 save_current(hwnd, state);
                 unsafe {
@@ -379,13 +463,13 @@ unsafe extern "system" fn dialog_proc(
             }
             0
         }
-        0x0002 => {
-            // WM_DESTROY
+        WM_DESTROY => {
             unsafe {
                 let _ = KillTimer(Some(hwnd), STATUS_TIMER_ID);
             }
             if let Some(state) = unsafe { dialog_state(hwnd) } {
                 if !state.modal {
+                    notify_moved(hwnd, state);
                     unsafe {
                         let _ = SendMessageW(
                             state.parent,
@@ -398,8 +482,7 @@ unsafe extern "system" fn dialog_proc(
             }
             0
         }
-        0x0082 => {
-            // WM_NCDESTROY
+        WM_NCDESTROY => {
             let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut DialogState;
             if !pointer.is_null() {
                 unsafe {
@@ -431,8 +514,7 @@ unsafe extern "system" fn dialog_proc(
             }
             0
         }
-        0x001A | 0x031A => {
-            // WM_SETTINGCHANGE / WM_THEMECHANGED
+        WM_SETTINGCHANGE | WM_THEMECHANGED => {
             theme::apply(hwnd, theme::is_dark());
             0
         }
@@ -443,7 +525,7 @@ unsafe extern "system" fn dialog_proc(
 unsafe fn close_dialog(hwnd: HWND, state: &DialogState) {
     unsafe {
         if state.modal {
-            let _ = EndDialog(hwnd, IDCANCEL);
+            let _ = EndDialog(hwnd, ID_CANCEL as isize);
         } else {
             let _ = DestroyWindow(hwnd);
         }
@@ -770,7 +852,7 @@ fn combo(
     ) {
         set_font(control, font);
         for item in items {
-            let wide: Vec<u16> = item.encode_utf16().chain([0]).collect();
+            let wide = crate::text::wide(item);
             unsafe {
                 SendMessageW(
                     control,
@@ -812,7 +894,7 @@ fn create(
     unsafe {
         let _ = MapDialogRect(hwnd, &mut rect);
     }
-    let wide: Vec<u16> = text_value.encode_utf16().chain([0]).collect();
+    let wide = crate::text::wide(text_value);
     unsafe {
         CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(ex_style),
@@ -880,7 +962,7 @@ fn create_icon_font(font: usize) -> Option<HFONT> {
         return None;
     }
     logfont.lfHeight = logfont.lfHeight.saturating_mul(4) / 3;
-    let face: Vec<u16> = "Segoe UI Symbol".encode_utf16().chain([0]).collect();
+    let face = crate::text::wide("Segoe UI Symbol");
     let length = face.len().min(logfont.lfFaceName.len());
     logfont.lfFaceName[..length].copy_from_slice(&face[..length]);
     let icon = unsafe { CreateFontIndirectW(&logfont) };
@@ -927,12 +1009,9 @@ fn read_ui(hwnd: HWND, state: &DialogState) -> Option<Config> {
         _ => TransportKind::Pipe,
     };
 
-    config.livesplit = LiveSplitConfig {
-        transport: config.livesplit.transport,
-        host: get_text(hwnd, ID_HOST),
-        port: parse_u32(&get_text(hwnd, ID_PORT)).unwrap_or(0),
-        websocket_path: get_text(hwnd, ID_WS_PATH),
-    };
+    config.livesplit.host = get_text(hwnd, ID_HOST).trim().to_string();
+    config.livesplit.port = parse_u32(&get_text(hwnd, ID_PORT)).unwrap_or(0);
+    config.livesplit.websocket_path = get_text(hwnd, ID_WS_PATH).trim().to_string();
 
     Some(config)
 }
@@ -959,7 +1038,7 @@ fn parse_u32(value: &str) -> Option<u32> {
 }
 
 fn set_text(hwnd: HWND, id: i32, value: &str) {
-    let wide: Vec<u16> = value.encode_utf16().chain([0]).collect();
+    let wide = crate::text::wide(value);
     unsafe {
         if let Ok(control) = GetDlgItem(Some(hwnd), id) {
             let _ = SetWindowTextW(control, PCWSTR(wide.as_ptr()));
@@ -1098,6 +1177,24 @@ mod tests {
     static DIALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn clamps_positions_to_the_work_area() {
+        let work = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1040,
+        };
+
+        assert_eq!(clamp_position(-1000, 100, 500, 400, work), (-1000, 100));
+        assert_eq!(clamp_position(-100, 100, 500, 400, work), (-500, 100));
+        assert_eq!(clamp_position(100, 100, 500, 400, work), (-500, 100));
+        assert_eq!(clamp_position(-2500, -100, 500, 400, work), (-1920, 0));
+        assert_eq!(clamp_position(-1000, 900, 500, 400, work), (-1000, 640));
+        // A window larger than the work area is pinned to its top-left.
+        assert_eq!(clamp_position(0, 0, 3000, 2000, work), (-1920, 0));
+    }
+
+    #[test]
     fn status_glyphs_match_the_result() {
         assert_eq!(TestStatus::Clear.glyph(), "");
         assert_eq!(TestStatus::Pending.glyph(), "\u{25D4}");
@@ -1142,6 +1239,42 @@ mod tests {
             thread.is_finished()
         );
         assert!(thread.join().expect("dialog thread").is_none());
+    }
+
+    #[test]
+    #[ignore = "drives a native dialog; run with --ignored --test-threads=1"]
+    fn dialog_restores_its_saved_position() {
+        let _guard = DIALOG_TEST_LOCK.lock().expect("dialog test lock");
+        let expected = (140, 120);
+        let mut config = Config::default();
+        config.window.settings_x = Some(expected.0);
+        config.window.settings_y = Some(expected.1);
+
+        let thread = std::thread::spawn(move || show(HWND::default(), &config));
+        let mut dialog = None;
+        let mut restored = None;
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(10));
+            if let Some(hwnd) = find_dialog() {
+                dialog = Some(hwnd);
+                let mut rect = RECT::default();
+                unsafe {
+                    let _ = GetWindowRect(hwnd, &mut rect);
+                }
+                if (rect.left, rect.top) == expected {
+                    restored = Some((rect.left, rect.top));
+                    break;
+                }
+            }
+        }
+        if let Some(hwnd) = dialog {
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+
+        let _ = thread.join().expect("dialog thread");
+        assert_eq!(restored, Some(expected));
     }
 
     #[test]

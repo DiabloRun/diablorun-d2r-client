@@ -1,19 +1,10 @@
 //! Shared state between the UI, capture thread, and LiveSplit worker.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::config::Config;
-
-/// A capture-side pause/unpause transition. The frame timestamp is the WGC
-/// presentation timestamp (100 ns units) and is kept so the event can be
-/// correlated with the frame that caused it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PauseTransition {
-    pub paused: bool,
-    pub timestamp: i64,
-}
 
 /// Transitions are drained by the LiveSplit worker immediately. The cap only
 /// protects against unbounded growth if that worker stalls for a long time.
@@ -52,7 +43,7 @@ pub struct StatusSnapshot {
 
 struct Inner {
     desired_paused: bool,
-    pause_transitions: VecDeque<PauseTransition>,
+    pause_transitions: VecDeque<bool>,
     settings: Arc<Config>,
     revision: u64,
     shutdown: bool,
@@ -67,6 +58,12 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn new(settings: Config) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
@@ -84,10 +81,7 @@ impl SharedState {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let inner = self.lock();
         Snapshot {
             desired_paused: inner.desired_paused,
             settings: Arc::clone(&inner.settings),
@@ -96,18 +90,11 @@ impl SharedState {
         }
     }
 
-    pub fn set_desired_paused(&self, paused: bool) {
-        self.set_desired_paused_at(paused, 0);
-    }
-
     /// Record a pause/unpause transition. Every change is journalled so the
     /// LiveSplit worker can still apply a quick pause+resume pair that happens
     /// between two of its wakeups.
-    pub fn set_desired_paused_at(&self, paused: bool, timestamp: i64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pub fn set_desired_paused(&self, paused: bool) {
+        let mut inner = self.lock();
         if inner.shutdown {
             // Never let a late capture transition re-pause game time while the
             // app is shutting down.
@@ -120,9 +107,7 @@ impl SharedState {
         if inner.pause_transitions.len() >= MAX_PAUSE_TRANSITIONS {
             inner.pause_transitions.pop_front();
         }
-        inner
-            .pause_transitions
-            .push_back(PauseTransition { paused, timestamp });
+        inner.pause_transitions.push_back(paused);
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();
@@ -130,19 +115,13 @@ impl SharedState {
 
     /// Take all transitions recorded since the last drain. The worker sends
     /// them in order; the latest `desired_paused` value remains authoritative.
-    pub fn drain_pause_transitions(&self) -> Vec<PauseTransition> {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pub fn drain_pause_transitions(&self) -> Vec<bool> {
+        let mut inner = self.lock();
         inner.pause_transitions.drain(..).collect()
     }
 
     pub fn apply_settings(&self, settings: Config) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self.lock();
         // A settings change (re)connects the worker, which sends the current
         // desired state. Old transitions must not be replayed afterwards.
         inner.pause_transitions.clear();
@@ -153,10 +132,7 @@ impl SharedState {
     }
 
     pub fn request_shutdown(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self.lock();
         inner.shutdown = true;
         inner.desired_paused = false;
         inner.pause_transitions.clear();
@@ -166,27 +142,18 @@ impl SharedState {
     }
 
     pub fn set_capture_status(&self, status: CaptureStatus, detail: impl Into<String>) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self.lock();
         inner.capture_status = status;
         inner.capture_detail = detail.into();
     }
 
     pub fn set_livesplit_status(&self, status: LiveSplitStatus) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self.lock();
         inner.livesplit_status = status;
     }
 
     pub fn status(&self) -> StatusSnapshot {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let inner = self.lock();
         StatusSnapshot {
             capture_status: inner.capture_status,
             capture_detail: inner.capture_detail.clone(),
@@ -197,10 +164,7 @@ impl SharedState {
     /// Wait until the revision changes, the timeout expires, or shutdown is
     /// requested. Returns the current revision.
     pub fn wait_for_revision(&self, revision: u64, timeout: Duration) -> u64 {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self.lock();
         if inner.revision == revision && !inner.shutdown {
             let (guard, _) = self
                 .changed
@@ -232,30 +196,18 @@ mod tests {
     #[test]
     fn pause_transitions_are_journalled_in_order() {
         let shared = SharedState::new(Config::default());
-        shared.set_desired_paused_at(true, 10);
-        shared.set_desired_paused_at(true, 11);
-        shared.set_desired_paused_at(false, 20);
+        shared.set_desired_paused(true);
+        shared.set_desired_paused(true);
+        shared.set_desired_paused(false);
 
-        assert_eq!(
-            shared.drain_pause_transitions(),
-            vec![
-                PauseTransition {
-                    paused: true,
-                    timestamp: 10
-                },
-                PauseTransition {
-                    paused: false,
-                    timestamp: 20
-                }
-            ]
-        );
+        assert_eq!(shared.drain_pause_transitions(), vec![true, false]);
         assert!(shared.drain_pause_transitions().is_empty());
     }
 
     #[test]
     fn shutdown_discards_pending_pause_transitions() {
         let shared = SharedState::new(Config::default());
-        shared.set_desired_paused_at(true, 10);
+        shared.set_desired_paused(true);
         shared.request_shutdown();
 
         assert!(shared.drain_pause_transitions().is_empty());

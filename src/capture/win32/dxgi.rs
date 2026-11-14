@@ -36,22 +36,22 @@ struct CropTexture {
 impl DxgiCapture {
     pub fn start(device: &ID3D11Device, hwnd: HWND) -> Result<Self, CaptureError> {
         let (monitor, monitor_rect) = window::monitor_for_window(hwnd)
-            .ok_or_else(|| CaptureError::Recoverable("could not find monitor".into()))?;
+            .ok_or_else(|| CaptureError::new("could not find monitor"))?;
 
         let dxgi_device: IDXGIDevice = device
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI device: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI device: {error}")))?;
         let adapter: IDXGIAdapter = unsafe { dxgi_device.GetAdapter() }
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI adapter: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI adapter: {error}")))?;
         let output = find_output(&adapter, monitor)?;
         let output1: IDXGIOutput1 = output
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI output1: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI output1: {error}")))?;
         let unknown: windows::core::IUnknown = dxgi_device
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI unknown: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI unknown: {error}")))?;
         let duplication = unsafe { output1.DuplicateOutput(&unknown) }
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI duplication: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI duplication: {error}")))?;
 
         Ok(Self {
             device: device.clone(),
@@ -86,12 +86,12 @@ impl DxgiCapture {
             Ok(()) => {}
             Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
             Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
-                return Err(CaptureError::Recoverable(
-                    "DXGI duplication access lost".into(),
+                return Err(CaptureError::new(
+                    "DXGI duplication access lost",
                 ));
             }
             Err(error) => {
-                return Err(CaptureError::Recoverable(format!(
+                return Err(CaptureError::new(format!(
                     "DXGI acquire frame: {error}"
                 )));
             }
@@ -112,12 +112,12 @@ impl DxgiCapture {
         };
         let source: ID3D11Texture2D = resource
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI texture: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI texture: {error}")))?;
         let mut source_desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { source.GetDesc(&mut source_desc) };
 
         let Some(rect) = window::window_rect(self.hwnd) else {
-            return Err(CaptureError::Recoverable("D2R window disappeared".into()));
+            return Err(CaptureError::new("D2R window disappeared"));
         };
 
         let monitor_width = (self.monitor_rect.right - self.monitor_rect.left).max(1) as u32;
@@ -130,8 +130,8 @@ impl DxgiCapture {
         let width = right.saturating_sub(left);
         let height = bottom.saturating_sub(top);
         if width == 0 || height == 0 {
-            return Err(CaptureError::Recoverable(
-                "D2R window is outside its monitor".into(),
+            return Err(CaptureError::new(
+                "D2R window is outside its monitor",
             ));
         }
 
@@ -145,7 +145,7 @@ impl DxgiCapture {
         if needs_crop {
             let texture = create_crop_texture(&self.device, width, height, source_desc.Format)
                 .map_err(|error| {
-                    CaptureError::Recoverable(format!("DXGI crop texture: {error}"))
+                    CaptureError::new(format!("DXGI crop texture: {error}"))
                 })?;
             self.crop = Some(CropTexture {
                 width,
@@ -159,11 +159,11 @@ impl DxgiCapture {
         let source_resource: windows::Win32::Graphics::Direct3D11::ID3D11Resource =
             source
                 .cast()
-                .map_err(|error| CaptureError::Recoverable(format!("DXGI source: {error}")))?;
+                .map_err(|error| CaptureError::new(format!("DXGI source: {error}")))?;
         let crop_resource: windows::Win32::Graphics::Direct3D11::ID3D11Resource = crop
             .texture
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI crop: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI crop: {error}")))?;
 
         let source_box = windows::Win32::Graphics::Direct3D11::D3D11_BOX {
             left,
@@ -175,7 +175,7 @@ impl DxgiCapture {
         };
 
         let context = unsafe { self.device.GetImmediateContext() }
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI context: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI context: {error}")))?;
         unsafe {
             context.CopySubresourceRegion(
                 &crop_resource,
@@ -206,7 +206,7 @@ fn find_output(
         match unsafe { adapter.EnumOutputs(index) } {
             Ok(output) => {
                 let desc: DXGI_OUTPUT_DESC = unsafe { output.GetDesc() }.map_err(|error| {
-                    CaptureError::Recoverable(format!("DXGI output desc: {error}"))
+                    CaptureError::new(format!("DXGI output desc: {error}"))
                 })?;
                 if desc.Monitor == monitor {
                     return Ok(output);
@@ -216,8 +216,8 @@ fn find_output(
         }
     }
 
-    Err(CaptureError::Recoverable(
-        "no DXGI output matches the D2R monitor".into(),
+    Err(CaptureError::new(
+        "no DXGI output matches the D2R monitor",
     ))
 }
 

@@ -145,8 +145,6 @@ impl Controller {
                 self.send_state(false)?;
                 self.pause_suppressed = true;
             }
-        } else if self.phase != TimerPhase::Running {
-            // Unpausing is safe even when the user paused the timer.
         }
 
         self.send_desired(desired_paused)
@@ -232,8 +230,8 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
             let latest = shared.snapshot();
             desired = latest.desired_paused;
 
-            for transition in transitions {
-                if controller.send_desired(transition.paused).is_err() {
+            for paused in transitions {
+                if controller.send_desired(paused).is_err() {
                     mark_disconnected(&shared, &mut controller, &mut next_retry);
                     break;
                 }
@@ -315,7 +313,7 @@ mod tests {
 
         fn read_response(&mut self) -> io::Result<String> {
             if self.fail_reads {
-                return Err(io::Error::new(io::ErrorKind::Other, "mock read failed"));
+                return Err(io::Error::other("mock read failed"));
             }
             self.responses
                 .pop_front()
@@ -500,7 +498,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
 
-        shared.set_desired_paused_at(true, 10);
+        shared.set_desired_paused(true);
         wait_for_commands(&commands, Duration::from_millis(400), |seen| {
             seen.iter().any(|command| command == PAUSE_GAME_TIME)
         });
@@ -509,7 +507,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        shared.set_desired_paused_at(false, 20);
+        shared.set_desired_paused(false);
         wait_for_commands(&commands, Duration::from_millis(400), |seen| {
             seen.iter().any(|command| command == UNPAUSE_GAME_TIME)
         });
@@ -518,8 +516,8 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        shared.set_desired_paused_at(true, 30);
-        shared.set_desired_paused_at(false, 40);
+        shared.set_desired_paused(true);
+        shared.set_desired_paused(false);
         let seen = wait_for_commands(&commands, Duration::from_millis(400), |seen| {
             seen.iter().any(|command| command == PAUSE_GAME_TIME)
                 && seen.iter().any(|command| command == UNPAUSE_GAME_TIME)

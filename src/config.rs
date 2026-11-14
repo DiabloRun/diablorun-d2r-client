@@ -58,6 +58,7 @@ pub struct Config {
     pub capture: CaptureConfig,
     pub detection: DetectionConfig,
     pub livesplit: LiveSplitConfig,
+    pub window: WindowConfig,
 }
 
 impl Default for Config {
@@ -66,6 +67,25 @@ impl Default for Config {
             capture: CaptureConfig::default(),
             detection: DetectionConfig::default(),
             livesplit: LiveSplitConfig::default(),
+            window: WindowConfig::default(),
+        }
+    }
+}
+
+/// Remembered window placement in physical screen pixels. `None` means the
+/// window has not been placed yet and should open in its default position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowConfig {
+    pub settings_x: Option<i32>,
+    pub settings_y: Option<i32>,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            settings_x: None,
+            settings_y: None,
         }
     }
 }
@@ -233,22 +253,25 @@ impl Config {
     pub fn normalize(&mut self) {
         let defaults = Self::default();
 
-        self.capture.min_width = clamp(self.capture.min_width, 1, 16384);
-        self.capture.min_height = clamp(self.capture.min_height, 1, 16384);
+        self.capture.min_width = self.capture.min_width.clamp(1, 16384);
+        self.capture.min_height = self.capture.min_height.clamp(1, 16384);
 
-        self.detection.confirm_frames = clamp(self.detection.confirm_frames, 1, 10);
+        self.detection.confirm_frames = self.detection.confirm_frames.clamp(1, 10);
 
-        if self.livesplit.host.trim().is_empty() {
+        self.livesplit.host = self.livesplit.host.trim().to_string();
+        if self.livesplit.host.is_empty() {
             self.livesplit.host = defaults.livesplit.host;
         }
         if self.livesplit.port == 0 {
             self.livesplit.port = defaults.livesplit.port;
         }
-        self.livesplit.port = clamp(self.livesplit.port, 1, 65535);
-        if self.livesplit.websocket_path.trim().is_empty() {
+        self.livesplit.port = self.livesplit.port.clamp(1, 65535);
+
+        self.livesplit.websocket_path = self.livesplit.websocket_path.trim().to_string();
+        if self.livesplit.websocket_path.is_empty() {
             self.livesplit.websocket_path = defaults.livesplit.websocket_path;
         } else if !self.livesplit.websocket_path.starts_with('/') {
-            self.livesplit.websocket_path = format!("/{}", self.livesplit.websocket_path.trim());
+            self.livesplit.websocket_path = format!("/{}", self.livesplit.websocket_path);
         }
     }
 
@@ -264,7 +287,9 @@ impl Config {
             TransportKind::Pipe => {}
         }
 
-        if self.livesplit.port == 0 || self.livesplit.port > 65535 {
+        if self.livesplit.transport != TransportKind::Pipe
+            && (self.livesplit.port == 0 || self.livesplit.port > 65535)
+        {
             return Err("Port must be between 1 and 65535.".into());
         }
         if self.livesplit.transport == TransportKind::WebSocket
@@ -283,24 +308,13 @@ impl Config {
     }
 }
 
-fn clamp<T: PartialOrd + Copy>(value: T, min: T, max: T) -> T {
-    if value < min {
-        min
-    } else if value > max {
-        max
-    } else {
-        value
-    }
-}
-
 /// Save config atomically (write temporary file, then rename).
 pub fn save_config(path: &Path, config: &Config) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut json = serde_json::to_string_pretty(config)
-        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
+    let mut json = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
     json.push('\n');
 
     let temporary = path.with_extension("json.tmp");
@@ -330,6 +344,19 @@ mod tests {
         assert_eq!(config.livesplit.transport, TransportKind::Tcp);
         assert_eq!(config.livesplit.host, "localhost");
         assert_eq!(config.livesplit.port, 16834);
+    }
+
+    #[test]
+    fn keeps_remembered_window_position() {
+        let config = parse_config(
+            r#"{
+                "window": { "settings_x": -1200, "settings_y": 80 }
+            }"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(config.window.settings_x, Some(-1200));
+        assert_eq!(config.window.settings_y, Some(80));
     }
 
     #[test]
@@ -367,6 +394,27 @@ mod tests {
     }
 
     #[test]
+    fn trims_connection_whitespace() {
+        let mut config = Config::default();
+        config.livesplit.host = "  127.0.0.1  ".into();
+        config.livesplit.websocket_path = "  /livesplit  ".into();
+        config.normalize();
+
+        assert_eq!(config.livesplit.host, "127.0.0.1");
+        assert_eq!(config.livesplit.websocket_path, "/livesplit");
+    }
+
+    #[test]
+    fn pipe_does_not_require_a_valid_port() {
+        let mut config = Config::default();
+        config.livesplit.port = 0;
+        assert!(config.validate().is_ok());
+
+        config.livesplit.transport = TransportKind::Tcp;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn validates_dialog_values() {
         let mut config = Config::default();
         config.livesplit.transport = TransportKind::Tcp;
@@ -398,6 +446,8 @@ mod tests {
         let mut config = Config::default();
         config.capture.min_width = 320;
         config.livesplit.transport = TransportKind::Tcp;
+        config.window.settings_x = Some(-50);
+        config.window.settings_y = Some(75);
         save_config(&path, &config).expect("save config");
 
         // The second save must replace the existing file without an explicit

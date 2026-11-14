@@ -38,25 +38,25 @@ impl WgcCapture {
     pub fn start(hwnd: HWND, device: &ID3D11Device, fps: u32) -> Result<Self, CaptureError> {
         let interop: IGraphicsCaptureItemInterop =
             windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
-                .map_err(|error| CaptureError::Recoverable(format!("WGC factory: {error}")))?;
+                .map_err(|error| CaptureError::new(format!("WGC factory: {error}")))?;
         let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd) }
-            .map_err(|error| CaptureError::Recoverable(format!("WGC item: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC item: {error}")))?;
 
         let size = item
             .Size()
-            .map_err(|error| CaptureError::Recoverable(format!("WGC item size: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC item size: {error}")))?;
         if size.Width <= 0 || size.Height <= 0 {
-            return Err(CaptureError::Recoverable("WGC item has zero size".into()));
+            return Err(CaptureError::new("WGC item has zero size"));
         }
 
         let dxgi_device: IDXGIDevice = device
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("DXGI device: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("DXGI device: {error}")))?;
         let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }
-            .map_err(|error| CaptureError::Recoverable(format!("WGC device: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC device: {error}")))?;
         let d3d_device: IDirect3DDevice = inspectable
             .cast()
-            .map_err(|error| CaptureError::Recoverable(format!("WGC D3D device: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC D3D device: {error}")))?;
 
         let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &d3d_device,
@@ -64,7 +64,7 @@ impl WgcCapture {
             2,
             size,
         )
-        .map_err(|error| CaptureError::Recoverable(format!("WGC frame pool: {error}")))?;
+        .map_err(|error| CaptureError::new(format!("WGC frame pool: {error}")))?;
 
         let inbox: Inbox = Arc::new((Mutex::new(None), Condvar::new()));
         let closed = Arc::new(AtomicBool::new(false));
@@ -108,13 +108,13 @@ impl WgcCapture {
 
         frame_pool
             .FrameArrived(&frame_handler)
-            .map_err(|error| CaptureError::Recoverable(format!("WGC frame event: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC frame event: {error}")))?;
         item.Closed(&item_closed_handler)
-            .map_err(|error| CaptureError::Recoverable(format!("WGC item event: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC item event: {error}")))?;
 
         let session = frame_pool
             .CreateCaptureSession(&item)
-            .map_err(|error| CaptureError::Recoverable(format!("WGC session: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC session: {error}")))?;
         let _ = session.SetIsCursorCaptureEnabled(false);
         let _ = session.SetIsBorderRequired(false);
         if fps > 0 {
@@ -125,7 +125,7 @@ impl WgcCapture {
         }
         session
             .StartCapture()
-            .map_err(|error| CaptureError::Recoverable(format!("WGC start: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC start: {error}")))?;
 
         Ok(Self {
             session,
@@ -161,24 +161,24 @@ impl WgcCapture {
 
         let Some(frame) = frame else {
             if self.closed.load(Ordering::SeqCst) {
-                return Err(CaptureError::Recoverable("WGC capture closed".into()));
+                return Err(CaptureError::new("WGC capture closed"));
             }
             return Ok(None);
         };
 
         let surface = frame
             .Surface()
-            .map_err(|error| CaptureError::Recoverable(format!("WGC surface: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC surface: {error}")))?;
         let access: windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess =
             surface.cast().map_err(|error| {
-                CaptureError::Recoverable(format!("WGC surface access: {error}"))
+                CaptureError::new(format!("WGC surface access: {error}"))
             })?;
         let texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D =
             unsafe { access.GetInterface() }
-                .map_err(|error| CaptureError::Recoverable(format!("WGC texture: {error}")))?;
+                .map_err(|error| CaptureError::new(format!("WGC texture: {error}")))?;
         let content = frame
             .ContentSize()
-            .map_err(|error| CaptureError::Recoverable(format!("WGC content size: {error}")))?;
+            .map_err(|error| CaptureError::new(format!("WGC content size: {error}")))?;
         let timestamp = frame
             .SystemRelativeTime()
             .map(|time| time.Duration)

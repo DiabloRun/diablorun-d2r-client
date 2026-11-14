@@ -6,8 +6,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, PostMessageW,
@@ -55,15 +54,8 @@ impl TrayIcon {
     }
 
     pub fn add(&mut self) {
-        let mut data = self.data();
+        let data = self.data();
         self.added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
-        if !self.added {
-            return;
-        }
-        data.uFlags = NIF_TIP;
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
-        }
     }
 
     pub fn recreate(&mut self) {

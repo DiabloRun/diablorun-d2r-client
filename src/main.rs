@@ -10,6 +10,7 @@ mod livesplit;
 mod replay;
 mod settings_dialog;
 mod state;
+mod text;
 mod theme;
 mod transport;
 mod tray;
@@ -54,7 +55,7 @@ fn main() {
         });
     let has_console = needs_console && ensure_console(console_requested);
 
-    if let Err(error) = run() {
+    if let Err(error) = run(&args) {
         let is_tool_command = args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
@@ -70,32 +71,17 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), String> {
-    let cli = parse_args()?;
+fn run(args: &[String]) -> Result<(), String> {
+    let cli = parse_args(args)?;
 
     if let Some(directory) = cli.replay_frames.as_deref() {
         return replay::run(directory);
     }
 
-    unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
-    theme::init();
-
-    let loaded = config::load_config();
-    let config_path = loaded.path.clone();
-    let config = loaded.config;
-    if let Some(error) = loaded.error {
-        eprintln!("{error}");
-    }
-    if config_path.parent().is_some_and(|parent| !parent.exists()) {
-        let _ = std::fs::create_dir_all(config_path.parent().unwrap());
-    }
-    if !config_path.exists() {
-        let _ = config::save_config(&config_path, &config);
-    }
-
+    // Check for an existing instance before touching DPI, COM, the theme, or
+    // the config file. A second launch should be cheap and must not overwrite
+    // config or show startup errors for the running instance.
+    //
     // Keep the mutex handle alive for the lifetime of the process.
     let mutex = match unsafe { CreateMutexW(None, true, MUTEX_NAME) } {
         Ok(handle) => handle,
@@ -110,6 +96,23 @@ fn run() -> Result<(), String> {
     }
 
     unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    theme::init();
+
+    let loaded = config::load_config();
+    let config_path = loaded.path.clone();
+    let config = loaded.config;
+    if let Some(error) = loaded.error {
+        eprintln!("{error}");
+    }
+    if !config_path.exists() {
+        // `save_config` creates the parent directory when needed.
+        let _ = config::save_config(&config_path, &config);
+    }
+
+    unsafe {
         let _ = SetConsoleCtrlHandler(Some(console_ctrl_handler), true);
     }
 
@@ -121,30 +124,34 @@ fn run() -> Result<(), String> {
     app::run(config, config_path, options)
 }
 
-fn parse_args() -> Result<Cli, String> {
+fn parse_args(args: &[String]) -> Result<Cli, String> {
     let mut cli = Cli {
         no_tray: false,
         save_frames: None,
         replay_frames: None,
     };
 
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        index += 1;
         match arg.as_str() {
             // The console is attached in `main` before startup output.
             "--console" => {}
             "--no-tray" => cli.no_tray = true,
             "--save-frames" => {
-                cli.save_frames =
-                    Some(PathBuf::from(args.next().ok_or_else(|| {
-                        "--save-frames requires a directory".to_string()
-                    })?));
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "--save-frames requires a directory".to_string())?;
+                index += 1;
+                cli.save_frames = Some(PathBuf::from(value.as_str()));
             }
             "--replay-frames" => {
-                cli.replay_frames =
-                    Some(PathBuf::from(args.next().ok_or_else(|| {
-                        "--replay-frames requires a directory".to_string()
-                    })?));
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "--replay-frames requires a directory".to_string())?;
+                index += 1;
+                cli.replay_frames = Some(PathBuf::from(value.as_str()));
             }
             "--help" | "-h" => {
                 print_usage();
@@ -233,7 +240,7 @@ unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> windows::core
 }
 
 fn show_startup_error(message: &str) {
-    let wide: Vec<u16> = message.encode_utf16().chain([0]).collect();
+    let wide = text::wide(message);
     unsafe {
         let _ = MessageBoxW(
             None,

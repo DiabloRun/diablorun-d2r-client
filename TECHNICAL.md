@@ -103,7 +103,8 @@ WebSocket are not affected by this named-pipe ACL difference.
 A native settings dialog for the connection (transport, host, port, and
 WebSocket path) opens on startup and from the tray menu. It follows the Windows
 light/dark app theme, has its own taskbar entry, and is brought to the
-foreground when opened.
+foreground when opened. The dialog remembers its last screen position; if that
+position is no longer on a connected display it opens centered again.
 Connection changes are saved automatically: the LiveSplit connection is
 re-established without restarting the app. **Minimize to tray** dismisses the
 settings window. Test connection uses the values currently in the dialog and a
@@ -271,6 +272,7 @@ src/
   livesplit/             reconnecting client and state machine
   transport/             named pipe, TCP, WebSocket
   settings_dialog.rs     native Win32 dialog
+  text.rs                UTF-16 helpers for Win32 strings
   theme.rs               Windows light/dark mode support
   tray.rs, state.rs
 test/                    detector fixtures

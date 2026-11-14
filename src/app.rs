@@ -10,10 +10,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetActiveWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    FindWindowW, GetMessageW, GetWindowLongPtrW, IsWindow, MessageBoxW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
-    TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_OK, SW_SHOWNORMAL, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WNDCLASSEXW,
+    FindWindowW, GetMessageW, GetWindowLongPtrW, IsDialogMessageW, IsWindow, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW,
+    ShowWindow, TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_OK, SW_SHOWNORMAL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_LBUTTONUP,
+    WM_RBUTTONUP, WNDCLASSEXW,
 };
 
 use crate::config::{self, Config};
@@ -39,17 +40,11 @@ pub fn run(config: Config, config_path: PathBuf, options: Options) -> Result<(),
     let instance = unsafe { GetModuleHandleW(None) }.map_err(|error| error.to_string())?;
     let instance = HINSTANCE(instance.0);
 
-    let window_class: Vec<u16> = "D2RLrtTrackerMessageWindow"
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    let class_name = PCWSTR(window_class.as_ptr());
-
     let window_class_struct = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
         lpfnWndProc: Some(window_proc),
         hInstance: instance,
-        lpszClassName: class_name,
+        lpszClassName: WINDOW_CLASS,
         ..Default::default()
     };
     if unsafe { RegisterClassExW(&window_class_struct) } == 0 {
@@ -59,7 +54,7 @@ pub fn run(config: Config, config_path: PathBuf, options: Options) -> Result<(),
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
-            class_name,
+            WINDOW_CLASS,
             WINDOW_TITLE,
             WINDOW_STYLE(0),
             0,
@@ -88,6 +83,15 @@ pub fn run(config: Config, config_path: PathBuf, options: Options) -> Result<(),
         if result.0 <= 0 {
             break;
         }
+
+        // Modeless dialogs only get Tab/Escape/default-button handling when the
+        // owner's message loop offers their messages to IsDialogMessage first.
+        if let Some(dialog) = app.settings_hwnd {
+            if unsafe { IsDialogMessageW(dialog, &message) }.as_bool() {
+                continue;
+            }
+        }
+
         unsafe {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -132,6 +136,14 @@ impl App {
     }
 
     fn start(&mut self, options: &Options) {
+        // Show the settings window before adding the tray icon. The shell
+        // notification is a synchronous cross-process call and should not sit
+        // between process start and the first visible window.
+        // Headless `--no-tray` runs skip this along with the tray icon.
+        if !options.no_tray {
+            self.open_settings();
+        }
+
         let capture_shared = self.shared.clone();
         let save_frames = options.save_frames.clone();
         match std::thread::Builder::new()
@@ -163,10 +175,6 @@ impl App {
             let mut tray = TrayIcon::new(self.hwnd);
             tray.add();
             self.tray = Some(tray);
-
-            // Show the connection settings immediately on a normal launch.
-            // Headless `--no-tray` runs skip this along with the tray icon.
-            self.open_settings();
         }
     }
 
@@ -224,6 +232,9 @@ impl App {
     }
 
     fn apply_settings(&mut self, mut new_config: Config) {
+        // The dialog sends full settings snapshots. Its window position is
+        // tracked separately, so a settings save must not revert a recent move.
+        new_config.window = self.config.window.clone();
         new_config.normalize();
         if let Err(error) = new_config.validate() {
             show_error_message(self.hwnd, &format!("Invalid settings: {error}"));
@@ -239,6 +250,20 @@ impl App {
         if let Err(error) = config::save_config(&self.config_path, &self.config) {
             show_error_message(self.hwnd, &format!("Could not save config: {error}"));
         }
+    }
+
+    /// Remember where the settings dialog was left. This deliberately bypasses
+    /// `apply_settings`: moving a window must not restart the LiveSplit worker.
+    fn remember_settings_position(&mut self, dialog: HWND) {
+        let Some((x, y)) = settings_dialog::position(dialog) else {
+            return;
+        };
+        if self.config.window.settings_x == Some(x) && self.config.window.settings_y == Some(y) {
+            return;
+        }
+        self.config.window.settings_x = Some(x);
+        self.config.window.settings_y = Some(y);
+        self.save_config();
     }
 
     fn show_tray_menu(&mut self) {
@@ -284,8 +309,7 @@ unsafe extern "system" fn window_proc(
     if let Some(app) = app {
         if message == tray::TRAY_CALLBACK_MESSAGE {
             let event = (lparam.0 & 0xFFFF) as u32;
-            // WM_LBUTTONUP / WM_RBUTTONUP
-            if event == 0x0205 || event == 0x0202 {
+            if event == WM_LBUTTONUP || event == WM_RBUTTONUP {
                 app.show_tray_menu();
                 return LRESULT(0);
             }
@@ -300,6 +324,14 @@ unsafe extern "system" fn window_proc(
             let dialog = HWND(wparam.0 as *mut _);
             if let Some(config) = settings_dialog::take_result(dialog) {
                 app.apply_settings(config);
+            }
+            return LRESULT(0);
+        }
+
+        if message == settings_dialog::WM_APP_SETTINGS_MOVED {
+            let dialog = HWND(wparam.0 as *mut _);
+            if app.settings_hwnd == Some(dialog) {
+                app.remember_settings_position(dialog);
             }
             return LRESULT(0);
         }
@@ -348,7 +380,7 @@ unsafe extern "system" fn window_proc(
 }
 
 fn show_error_message(owner: HWND, message: &str) {
-    let wide: Vec<u16> = message.encode_utf16().chain([0]).collect();
+    let wide = crate::text::wide(message);
     unsafe {
         let _ = MessageBoxW(
             Some(owner),

@@ -1,5 +1,6 @@
 //! D2R window discovery and physical-pixel geometry.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::path::Path;
@@ -28,17 +29,34 @@ pub struct WindowInfo {
     pub client_height: u32,
 }
 
+struct WindowScan {
+    candidates: Vec<WindowInfo>,
+    /// Process lookup results for this scan. `Some(false)` means the process
+    /// was identified and is not D2R, so the title must not be read. `None`
+    /// means process access failed and the title fallback is needed.
+    process_matches: HashMap<u32, Option<bool>>,
+}
+
+impl WindowScan {
+    fn new() -> Self {
+        Self {
+            candidates: Vec::new(),
+            process_matches: HashMap::new(),
+        }
+    }
+}
+
 /// Find the largest visible, non-minimized D2R window. Matching by process
 /// image name is preferred; an exact window-title match is the fallback.
 pub fn find_d2r_window(config: &CaptureConfig) -> Option<WindowInfo> {
-    let mut candidates: Vec<WindowInfo> = Vec::new();
+    let mut scan = WindowScan::new();
 
-    let lparam = LPARAM(&mut candidates as *mut Vec<WindowInfo> as isize);
+    let lparam = LPARAM(&mut scan as *mut WindowScan as isize);
     unsafe {
         let _ = EnumWindows(Some(enum_window), lparam);
     }
 
-    candidates
+    scan.candidates
         .into_iter()
         .filter(|window| {
             window.client_width >= config.min_width && window.client_height >= config.min_height
@@ -47,7 +65,7 @@ pub fn find_d2r_window(config: &CaptureConfig) -> Option<WindowInfo> {
 }
 
 unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let candidates = unsafe { &mut *(lparam.0 as *mut Vec<WindowInfo>) };
+    let scan = unsafe { &mut *(lparam.0 as *mut WindowScan) };
 
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool() {
         return BOOL(1);
@@ -68,24 +86,27 @@ unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     unsafe {
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
     }
-    let process_path = if pid != 0 {
-        process_image_name(pid)
-    } else {
-        None
-    };
 
     // The process check is the normal path. The title fallback keeps detection
     // working when process access is denied (for example under some anti-cheat
-    // or sandbox configurations). Only read the title when it is needed.
-    let matches_process = process_path
-        .as_deref()
-        .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case("D2R.exe"))
-        .unwrap_or(false);
+    // or sandbox configurations). Only read the title when the process could
+    // not be identified at all.
+    let matches_process = if pid == 0 {
+        None
+    } else {
+        *scan.process_matches.entry(pid).or_insert_with(|| {
+            process_image_name(pid)
+                .as_deref()
+                .map(is_d2r_process)
+        })
+    };
+    let matches = match matches_process {
+        Some(matches) => matches,
+        None => window_title(hwnd) == "Diablo II: Resurrected",
+    };
 
-    if matches_process || window_title(hwnd) == "Diablo II: Resurrected" {
-        candidates.push(WindowInfo {
+    if matches {
+        scan.candidates.push(WindowInfo {
             hwnd,
             client_width: width,
             client_height: height,
@@ -93,6 +114,13 @@ unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     }
 
     BOOL(1)
+}
+
+fn is_d2r_process(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("D2R.exe"))
 }
 
 pub fn window_title(hwnd: HWND) -> String {
@@ -111,7 +139,7 @@ pub fn window_title(hwnd: HWND) -> String {
 
 fn process_image_name(pid: u32) -> Option<String> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
-    let mut buffer = vec![0u16; 1024];
+    let mut buffer = [0u16; 1024];
     let mut size = buffer.len() as u32;
     let result = unsafe {
         QueryFullProcessImageNameW(
@@ -125,6 +153,9 @@ fn process_image_name(pid: u32) -> Option<String> {
         let _ = CloseHandle(handle);
     }
     result.ok()?;
+    if size == 0 {
+        return None;
+    }
     Some(String::from_utf16_lossy(&buffer[..size as usize]))
 }
 
@@ -177,5 +208,18 @@ pub fn monitor_for_window(hwnd: HWND) -> Option<(HMONITOR, RECT)> {
         Some((monitor, info.rcMonitor))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_the_game_process_case_insensitively() {
+        assert!(is_d2r_process(r"C:\Games\D2R\D2R.exe"));
+        assert!(is_d2r_process(r"C:\Games\D2R\d2r.exe"));
+        assert!(!is_d2r_process(r"C:\Games\D2R\D2RLauncher.exe"));
+        assert!(!is_d2r_process(""));
     }
 }

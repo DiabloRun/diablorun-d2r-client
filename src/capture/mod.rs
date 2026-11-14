@@ -29,6 +29,10 @@ const CAPTURE_INTERVAL: Duration = Duration::from_millis(16);
 /// DXGI only resumes game time, because a static desktop can legitimately stop
 /// producing duplication frames.
 const NO_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+/// Window visibility and client-size checks run this often even while frames
+/// keep arriving. WGC can keep presenting the last frame of a minimized window,
+/// which would otherwise keep a loading screen paused indefinitely.
+const WINDOW_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 pub struct CapturedTexture {
     pub texture: ID3D11Texture2D,
@@ -39,15 +43,17 @@ pub struct CapturedTexture {
 }
 
 #[derive(Debug)]
-pub enum CaptureError {
-    Recoverable(String),
+pub struct CaptureError(String);
+
+impl CaptureError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
 }
 
 impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Recoverable(message) => f.write_str(message),
-        }
+        f.write_str(&self.0)
     }
 }
 
@@ -108,8 +114,7 @@ struct Runtime {
 
 struct ConfirmState {
     stable: bool,
-    candidate: Option<(bool, i64, u32)>,
-    last_transition: Option<(bool, i64)>,
+    candidate: Option<(bool, u32)>,
 }
 
 impl ConfirmState {
@@ -117,19 +122,16 @@ impl ConfirmState {
         Self {
             stable: false,
             candidate: None,
-            last_transition: None,
         }
     }
 
     fn reset(&mut self) {
         self.stable = false;
         self.candidate = None;
-        self.last_transition = None;
     }
 
-    /// Returns the confirmed state. Requiring consecutive frames preserves the
-    /// timestamp of the first candidate frame for future precision work.
-    fn update(&mut self, value: bool, timestamp: i64, required: u32) -> bool {
+    /// Returns the confirmed state after `required` consecutive frames.
+    fn update(&mut self, value: bool, required: u32) -> bool {
         if value == self.stable {
             self.candidate = None;
             return self.stable;
@@ -137,23 +139,21 @@ impl ConfirmState {
 
         let required = required.max(1);
         match self.candidate {
-            Some((candidate, first_timestamp, count)) if candidate == value => {
+            Some((candidate, count)) if candidate == value => {
                 let count = count + 1;
                 if count >= required {
                     self.stable = value;
                     self.candidate = None;
-                    self.last_transition = Some((value, first_timestamp));
                 } else {
-                    self.candidate = Some((candidate, first_timestamp, count));
+                    self.candidate = Some((candidate, count));
                 }
             }
             _ => {
                 if required <= 1 {
                     self.stable = value;
                     self.candidate = None;
-                    self.last_transition = Some((value, timestamp));
                 } else {
-                    self.candidate = Some((value, timestamp, 1));
+                    self.candidate = Some((value, 1));
                 }
             }
         }
@@ -287,6 +287,7 @@ pub fn run(shared: Arc<SharedState>, save_frames: Option<PathBuf>) {
                 continue;
             }
             BreakReason::BlackFallback => {
+                runtime.black_since = None;
                 if capture.kind() == Backend::Wgc {
                     wgc_failures += 1;
                     backend = Backend::Dxgi;
@@ -353,6 +354,12 @@ fn capture_session(
                 if !capture.matches_monitor(hwnd) {
                     return BreakReason::Restart;
                 }
+                if last_window_check.elapsed() >= WINDOW_CHECK_INTERVAL {
+                    last_window_check = Instant::now();
+                    if let Some(reason) = window_state_changed(hwnd, expected_size) {
+                        return reason;
+                    }
+                }
                 if let Some(size) = capture.size() {
                     if frame.size != size {
                         return BreakReason::Restart;
@@ -392,9 +399,7 @@ fn capture_session(
                 // detector would scan the whole frame to reach the same answer.
                 let detected = !scaled.all_black
                     && detector::detect_loading(&scaled.data, scaled.width, scaled.height);
-                let confirmed = runtime
-                    .confirm
-                    .update(detected, frame.timestamp, confirm_frames);
+                let confirmed = runtime.confirm.update(detected, confirm_frames);
 
                 if let Some(dumper) = dumper.as_deref_mut() {
                     dumper.write(&scaled, frame.timestamp, detected, confirmed);
@@ -408,19 +413,15 @@ fn capture_session(
                     );
                 }
                 // Also covers the first frame after a restart or a lost window.
-                shared.set_desired_paused_at(runtime.loading, frame.timestamp);
+                shared.set_desired_paused(runtime.loading);
             }
             Ok(None) => {
-                if last_window_check.elapsed() >= Duration::from_secs(2) {
+                if last_window_check.elapsed() >= WINDOW_CHECK_INTERVAL {
                     last_window_check = Instant::now();
-                    if !window::is_capturable(hwnd) {
-                        return BreakReason::Lost;
+                    if let Some(reason) = window_state_changed(hwnd, expected_size) {
+                        return reason;
                     }
-                    if !capture.matches_monitor(hwnd)
-                        || window::client_size(hwnd)
-                            .map(|size| size != expected_size)
-                            .unwrap_or(true)
-                    {
+                    if !capture.matches_monitor(hwnd) {
                         return BreakReason::Restart;
                     }
                 }
@@ -434,7 +435,7 @@ fn capture_session(
                     // to protect game time from staying paused forever.
                     if runtime.loading {
                         runtime.loading = false;
-                        shared.set_desired_paused_at(false, 0);
+                        shared.set_desired_paused(false);
                         shared.set_capture_status(
                             CaptureStatus::Capturing,
                             capture_detail(expected_size),
@@ -445,6 +446,22 @@ fn capture_session(
             Err(_) => return BreakReason::Lost,
         }
     }
+}
+
+fn window_state_changed(
+    hwnd: windows::Win32::Foundation::HWND,
+    expected_size: (u32, u32),
+) -> Option<BreakReason> {
+    if !window::is_capturable(hwnd) {
+        return Some(BreakReason::Lost);
+    }
+    if window::client_size(hwnd)
+        .map(|size| size != expected_size)
+        .unwrap_or(true)
+    {
+        return Some(BreakReason::Restart);
+    }
+    None
 }
 
 fn capture_detail(expected_size: (u32, u32)) -> String {
@@ -546,26 +563,23 @@ mod tests {
     #[test]
     fn confirm_frames_requires_consecutive_frames() {
         let mut confirm = ConfirmState::new();
-        assert!(!confirm.update(true, 10, 3));
-        assert!(!confirm.update(true, 20, 3));
-        assert!(confirm.update(true, 30, 3));
-        assert_eq!(confirm.last_transition, Some((true, 10)));
-        assert!(confirm.update(true, 40, 3));
+        assert!(!confirm.update(true, 3));
+        assert!(!confirm.update(true, 3));
+        assert!(confirm.update(true, 3));
+        assert!(confirm.update(true, 3));
 
-        assert!(confirm.update(false, 50, 3));
-        assert!(confirm.update(false, 60, 3));
-        assert!(!confirm.update(false, 70, 3));
-        assert_eq!(confirm.last_transition, Some((false, 50)));
+        assert!(confirm.update(false, 3));
+        assert!(confirm.update(false, 3));
+        assert!(!confirm.update(false, 3));
     }
 
     #[test]
     fn confirmation_drops_flicker() {
         let mut confirm = ConfirmState::new();
-        assert!(!confirm.update(true, 10, 2));
-        assert!(!confirm.update(false, 20, 2));
-        assert!(!confirm.update(true, 30, 2));
-        assert!(confirm.update(true, 40, 2));
-        assert_eq!(confirm.last_transition, Some((true, 30)));
+        assert!(!confirm.update(true, 2));
+        assert!(!confirm.update(false, 2));
+        assert!(!confirm.update(true, 2));
+        assert!(confirm.update(true, 2));
     }
 
     #[test]

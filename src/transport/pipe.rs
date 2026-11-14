@@ -18,6 +18,7 @@ use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleO
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use super::Connection;
+use crate::text;
 
 const PIPE_NAME: &str = r"\\.\pipe\LiveSplit";
 
@@ -37,7 +38,7 @@ impl PipeConnection {
     }
 
     fn connect_to_name(name: &str, timeout: Duration) -> io::Result<Self> {
-        let wide = to_wide(name);
+        let wide = text::wide(name);
         let name = PCWSTR(wide.as_ptr());
         let deadline = Instant::now() + timeout;
 
@@ -229,10 +230,6 @@ fn open_pipe(name: PCWSTR) -> windows::core::Result<HANDLE> {
     }
 }
 
-fn to_wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain([0]).collect()
-}
-
 fn is_win32(hresult: i32, code: u32) -> bool {
     (hresult as u32 & 0xFFFF) == (code & 0xFFFF)
 }
@@ -270,7 +267,7 @@ mod tests {
     }
 
     fn start_server(name: &str, response: &'static str) -> PipeServer {
-        let wide = to_wide(name);
+        let wide = text::wide(name);
         let handle = unsafe {
             CreateNamedPipeW(
                 PCWSTR(wide.as_ptr()),
