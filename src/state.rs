@@ -40,7 +40,6 @@ pub struct Snapshot {
     pub desired_paused: bool,
     pub settings: Arc<Config>,
     pub revision: u64,
-    pub reconnect_generation: u64,
     pub shutdown: bool,
 }
 
@@ -56,7 +55,6 @@ struct Inner {
     pause_transitions: VecDeque<PauseTransition>,
     settings: Arc<Config>,
     revision: u64,
-    reconnect_generation: u64,
     shutdown: bool,
     capture_status: CaptureStatus,
     capture_detail: String,
@@ -76,7 +74,6 @@ impl SharedState {
                 pause_transitions: VecDeque::new(),
                 settings: Arc::new(settings),
                 revision: 1,
-                reconnect_generation: 1,
                 shutdown: false,
                 capture_status: CaptureStatus::Searching,
                 capture_detail: String::new(),
@@ -95,7 +92,6 @@ impl SharedState {
             desired_paused: inner.desired_paused,
             settings: Arc::clone(&inner.settings),
             revision: inner.revision,
-            reconnect_generation: inner.reconnect_generation,
             shutdown: inner.shutdown,
         }
     }
@@ -151,20 +147,6 @@ impl SharedState {
         // desired state. Old transitions must not be replayed afterwards.
         inner.pause_transitions.clear();
         inner.settings = Arc::new(settings);
-        inner.revision = inner.revision.wrapping_add(1);
-        drop(inner);
-        self.changed.notify_all();
-    }
-
-    pub fn request_reconnect(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.reconnect_generation = inner.reconnect_generation.wrapping_add(1);
-        // The reconnect sends the latest desired state; drop transitions that
-        // belonged to the old connection.
-        inner.pause_transitions.clear();
         inner.revision = inner.revision.wrapping_add(1);
         drop(inner);
         self.changed.notify_all();

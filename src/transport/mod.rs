@@ -69,9 +69,9 @@ pub fn test_connection(settings: &LiveSplitConfig) -> Result<TransportKind, Stri
 
 fn connection_failure(settings: &LiveSplitConfig) -> String {
     match settings.transport {
-        TransportKind::Pipe => "Connection failed: is LiveSplit opened?",
-        TransportKind::Tcp => "Connection failed: start LiveSplit's TCP server.",
-        TransportKind::WebSocket => "Connection failed: start LiveSplit's WebSocket server.",
+        TransportKind::Pipe => "Connection failed: Is LiveSplit open?",
+        TransportKind::Tcp => "Connection failed: Start LiveSplit's TCP server.",
+        TransportKind::WebSocket => "Connection failed: Start LiveSplit's WebSocket server.",
     }
     .to_string()
 }
@@ -85,19 +85,19 @@ mod tests {
         let mut settings = LiveSplitConfig::default();
         assert_eq!(
             connection_failure(&settings),
-            "Connection failed: is LiveSplit opened?"
+            "Connection failed: Is LiveSplit open?"
         );
 
         settings.transport = TransportKind::Tcp;
         assert_eq!(
             connection_failure(&settings),
-            "Connection failed: start LiveSplit's TCP server."
+            "Connection failed: Start LiveSplit's TCP server."
         );
 
         settings.transport = TransportKind::WebSocket;
         assert_eq!(
             connection_failure(&settings),
-            "Connection failed: start LiveSplit's WebSocket server."
+            "Connection failed: Start LiveSplit's WebSocket server."
         );
     }
 }

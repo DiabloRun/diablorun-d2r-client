@@ -59,9 +59,38 @@ const STATUS_TIMER_ID: usize = 1;
 const STATUS_REFRESH_MS: u32 = 500;
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(400);
 
+// Layout in dialog units. Dialog units scale with the dialog font and DPI, so
+// these stay proportional across display settings.
+const DIALOG_WIDTH: i32 = 270;
+const DIALOG_HEIGHT: i32 = 232;
+const MARGIN: i32 = 8;
+const CONTENT_WIDTH: i32 = DIALOG_WIDTH - 2 * MARGIN;
+const SECTION_HEIGHT: i32 = 12;
+const STATUS_HEIGHT: i32 = 18;
+const STATUS_GAP: i32 = 4;
+const GROUP_GAP: i32 = 8;
+const SECTION_GAP: i32 = 12;
+const ACTION_GAP: i32 = 8;
+const FIELD_X: i32 = 60;
+const LABEL_WIDTH: i32 = FIELD_X - MARGIN;
+const FIELD_WIDTH: i32 = DIALOG_WIDTH - MARGIN - FIELD_X;
+const FIELD_HEIGHT: i32 = 14;
+const PORT_FIELD_WIDTH: i32 = 62;
+const COMBO_OFFSET: i32 = 2;
+const COMBO_HEIGHT: i32 = 60;
+const BUTTON_HEIGHT: i32 = 14;
+const TEST_BUTTON_WIDTH: i32 = 74;
+const CLOSE_BUTTON_WIDTH: i32 = 76;
+const ICON_SIZE: i32 = 12;
+const ICON_TEXT_GAP: i32 = 4;
+const STATUS_TEXT_X: i32 = MARGIN + ICON_SIZE + ICON_TEXT_GAP;
+const STATUS_TEXT_WIDTH: i32 = DIALOG_WIDTH - MARGIN - STATUS_TEXT_X;
+const TEST_STATUS_HEIGHT: i32 = 14;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TestStatus {
     Clear,
+    Pending,
     Success,
     Failure,
 }
@@ -70,6 +99,7 @@ impl TestStatus {
     fn glyph(self) -> &'static str {
         match self {
             Self::Clear => "",
+            Self::Pending => "\u{25D4}",
             Self::Success => "\u{2714}",
             Self::Failure => "\u{2716}",
         }
@@ -78,6 +108,7 @@ impl TestStatus {
     fn color(self) -> Option<COLORREF> {
         match self {
             Self::Clear => None,
+            Self::Pending => Some(COLORREF(0x0080_8080)),
             Self::Success => Some(COLORREF(0x0053_A834)),
             Self::Failure => Some(COLORREF(0x0035_43EA)),
         }
@@ -203,8 +234,8 @@ fn build_template() -> Vec<u8> {
     template.extend_from_slice(&0u16.to_le_bytes()); // no items
     template.extend_from_slice(&0i16.to_le_bytes()); // x
     template.extend_from_slice(&0i16.to_le_bytes()); // y
-    template.extend_from_slice(&340i16.to_le_bytes()); // cx
-    template.extend_from_slice(&246i16.to_le_bytes()); // cy
+    template.extend_from_slice(&(DIALOG_WIDTH as i16).to_le_bytes()); // cx
+    template.extend_from_slice(&(DIALOG_HEIGHT as i16).to_le_bytes()); // cy
     template.extend_from_slice(&0u16.to_le_bytes()); // menu
     template.extend_from_slice(&0u16.to_le_bytes()); // class
     for unit in "D2R LRT Tracker Settings".encode_utf16() {
@@ -283,16 +314,23 @@ unsafe extern "system" fn dialog_proc(
                             set_status(
                                 hwnd,
                                 state,
-                                TestStatus::Clear,
+                                TestStatus::Pending,
                                 "Testing LiveSplit connection...",
                             );
                             match transport::test_connection(&config.livesplit) {
-                                Ok(transport) => set_status(
-                                    hwnd,
-                                    state,
-                                    TestStatus::Success,
-                                    &format!("LiveSplit connected via {}", transport.as_str()),
-                                ),
+                                Ok(kind) => {
+                                    let name = match kind {
+                                        TransportKind::Pipe => "named pipe",
+                                        TransportKind::Tcp => "TCP",
+                                        TransportKind::WebSocket => "WebSocket",
+                                    };
+                                    set_status(
+                                        hwnd,
+                                        state,
+                                        TestStatus::Success,
+                                        &format!("LiveSplit connected via {name}"),
+                                    );
+                                }
                                 Err(error) => set_status(hwnd, state, TestStatus::Failure, &error),
                             }
                         }
@@ -433,29 +471,70 @@ fn create_controls(hwnd: HWND, state: &mut DialogState) {
     let icon_font_value = icon_font.map_or(font, |icon| icon.0 as usize);
     state.icon_font = icon_font;
 
-    section(hwnd, "Status", 8, 8, section_font);
+    let mut y = MARGIN;
+    section(hwnd, "Status", MARGIN, y, CONTENT_WIDTH, section_font);
+    y += SECTION_HEIGHT + GROUP_GAP;
+    let icon_y = y + (STATUS_HEIGHT - ICON_SIZE) / 2;
     icon_static(
         hwnd,
         ID_LIVESPLIT_STATUS_ICON,
-        8,
-        28,
-        12,
-        12,
+        MARGIN,
+        icon_y,
+        ICON_SIZE,
+        ICON_SIZE,
         icon_font_value,
     );
-    text(hwnd, ID_LIVESPLIT_STATUS, "", 24, 24, 308, 20, font);
-    icon_static(hwnd, ID_CAPTURE_STATUS_ICON, 8, 50, 12, 12, icon_font_value);
-    text(hwnd, ID_CAPTURE_STATUS, "", 24, 46, 308, 20, font);
+    text(
+        hwnd,
+        ID_LIVESPLIT_STATUS,
+        "",
+        STATUS_TEXT_X,
+        y,
+        STATUS_TEXT_WIDTH,
+        STATUS_HEIGHT,
+        font,
+    );
+    y += STATUS_HEIGHT + STATUS_GAP;
+    icon_static(
+        hwnd,
+        ID_CAPTURE_STATUS_ICON,
+        MARGIN,
+        y + (STATUS_HEIGHT - ICON_SIZE) / 2,
+        ICON_SIZE,
+        ICON_SIZE,
+        icon_font_value,
+    );
+    text(
+        hwnd,
+        ID_CAPTURE_STATUS,
+        "",
+        STATUS_TEXT_X,
+        y,
+        STATUS_TEXT_WIDTH,
+        STATUS_HEIGHT,
+        font,
+    );
+    y += STATUS_HEIGHT + SECTION_GAP;
 
-    section(hwnd, "LiveSplit", 8, 70, section_font);
-    label(hwnd, "Transport:", 8, 88);
+    section(hwnd, "LiveSplit", MARGIN, y, CONTENT_WIDTH, section_font);
+    y += SECTION_HEIGHT + GROUP_GAP;
+
+    label(
+        hwnd,
+        "Transport:",
+        MARGIN,
+        y,
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+        font,
+    );
     combo(
         hwnd,
         ID_TRANSPORT,
-        95,
-        86,
-        210,
-        60,
+        FIELD_X,
+        y + COMBO_OFFSET,
+        FIELD_WIDTH,
+        COMBO_HEIGHT,
         &["Named pipe", "TCP", "WebSocket"],
         match state.config.livesplit.transport {
             TransportKind::Pipe => 0,
@@ -464,46 +543,89 @@ fn create_controls(hwnd: HWND, state: &mut DialogState) {
         },
         font,
     );
+    y += FIELD_HEIGHT + GROUP_GAP;
 
-    label(hwnd, "Host:", 8, 114);
+    label(hwnd, "Host:", MARGIN, y, LABEL_WIDTH, FIELD_HEIGHT, font);
     edit(
         hwnd,
         ID_HOST,
-        95,
-        112,
-        210,
-        14,
+        FIELD_X,
+        y,
+        FIELD_WIDTH,
+        FIELD_HEIGHT,
         &state.config.livesplit.host,
         font,
     );
-    label(hwnd, "Port:", 8, 136);
+    y += FIELD_HEIGHT + GROUP_GAP;
+
+    label(hwnd, "Port:", MARGIN, y, LABEL_WIDTH, FIELD_HEIGHT, font);
     edit(
         hwnd,
         ID_PORT,
-        95,
-        134,
-        80,
-        14,
+        FIELD_X,
+        y,
+        PORT_FIELD_WIDTH,
+        FIELD_HEIGHT,
         &state.config.livesplit.port.to_string(),
         font,
     );
-    label(hwnd, "WS path:", 8, 158);
+    y += FIELD_HEIGHT + GROUP_GAP;
+
+    label(hwnd, "WS path:", MARGIN, y, LABEL_WIDTH, FIELD_HEIGHT, font);
     edit(
         hwnd,
         ID_WS_PATH,
-        95,
-        156,
-        210,
-        14,
+        FIELD_X,
+        y,
+        FIELD_WIDTH,
+        FIELD_HEIGHT,
         &state.config.livesplit.websocket_path,
         font,
     );
+    y += FIELD_HEIGHT + ACTION_GAP;
 
-    button(hwnd, ID_TEST, "Test connection", 8, 180, 82, 20, font);
-    icon_static(hwnd, ID_TEST_ICON, 95, 184, 12, 12, icon_font_value);
-    text(hwnd, ID_TEST_STATUS, "", 108, 180, 222, 20, font);
+    icon_static(
+        hwnd,
+        ID_TEST_ICON,
+        MARGIN,
+        y + (TEST_STATUS_HEIGHT - ICON_SIZE) / 2,
+        ICON_SIZE,
+        ICON_SIZE,
+        icon_font_value,
+    );
+    text(
+        hwnd,
+        ID_TEST_STATUS,
+        "",
+        STATUS_TEXT_X,
+        y,
+        STATUS_TEXT_WIDTH,
+        TEST_STATUS_HEIGHT,
+        font,
+    );
+    y += TEST_STATUS_HEIGHT + ACTION_GAP;
 
-    button(hwnd, ID_CLOSE, "Close to tray", 238, 216, 94, 20, font);
+    button(
+        hwnd,
+        ID_TEST,
+        "Test connection",
+        MARGIN,
+        y,
+        TEST_BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+        font,
+    );
+    button(
+        hwnd,
+        ID_CLOSE,
+        "Minimize to tray",
+        DIALOG_WIDTH - MARGIN - CLOSE_BUTTON_WIDTH,
+        y,
+        CLOSE_BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+        font,
+    );
+    debug_assert_eq!(y + BUTTON_HEIGHT + MARGIN, DIALOG_HEIGHT);
 
     update_live_status(hwnd, state);
     update_control_states(hwnd);
@@ -515,17 +637,37 @@ fn create_controls(hwnd: HWND, state: &mut DialogState) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn section(hwnd: HWND, text_value: &str, x: i32, y: i32, font: usize) {
-    if let Some(control) = create(hwnd, w!("STATIC"), text_value, 0, x, y, 300, 12, 0, 0) {
+fn section(hwnd: HWND, text_value: &str, x: i32, y: i32, width: i32, font: usize) {
+    if let Some(control) = create(
+        hwnd,
+        w!("STATIC"),
+        text_value,
+        0,
+        x,
+        y,
+        width,
+        SECTION_HEIGHT,
+        0,
+        0,
+    ) {
         set_font(control, font);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn label(hwnd: HWND, text_value: &str, x: i32, y: i32) {
-    let font =
-        unsafe { SendMessageW(hwnd, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))) }.0 as usize;
-    if let Some(control) = create(hwnd, w!("STATIC"), text_value, 0, x, y, 85, 12, 0, 0) {
+fn label(hwnd: HWND, text_value: &str, x: i32, y: i32, width: i32, height: i32, font: usize) {
+    if let Some(control) = create(
+        hwnd,
+        w!("STATIC"),
+        text_value,
+        0,
+        x,
+        y,
+        width,
+        height,
+        SS_CENTERIMAGE,
+        0,
+    ) {
         set_font(control, font);
     }
 }
@@ -865,9 +1007,9 @@ fn update_live_status(hwnd: HWND, state: &mut DialogState) {
     let status = state.shared.status();
 
     let (livesplit_row, livesplit_text) = match status.livesplit_status {
-        LiveSplitStatus::Connected => (TestStatus::Success, "LiveSplit Connected".to_string()),
+        LiveSplitStatus::Connected => (TestStatus::Success, "LiveSplit connected".to_string()),
         LiveSplitStatus::Connecting | LiveSplitStatus::Disconnected => {
-            (TestStatus::Failure, "LiveSplit Disconnected".to_string())
+            (TestStatus::Failure, "LiveSplit disconnected".to_string())
         }
     };
     if state.livesplit_row != livesplit_row || get_text(hwnd, ID_LIVESPLIT_STATUS) != livesplit_text
@@ -888,7 +1030,7 @@ fn update_live_status(hwnd: HWND, state: &mut DialogState) {
             format!("Capturing {}", status.capture_detail),
         ),
         CaptureStatus::Searching => (
-            TestStatus::Failure,
+            TestStatus::Pending,
             "Waiting for Diablo II: Resurrected".to_string(),
         ),
         CaptureStatus::Lost => (
@@ -958,8 +1100,10 @@ mod tests {
     #[test]
     fn status_glyphs_match_the_result() {
         assert_eq!(TestStatus::Clear.glyph(), "");
+        assert_eq!(TestStatus::Pending.glyph(), "\u{25D4}");
         assert_eq!(TestStatus::Success.glyph(), "\u{2714}");
         assert_eq!(TestStatus::Failure.glyph(), "\u{2716}");
+        assert!(TestStatus::Pending.color().is_some());
         assert!(TestStatus::Success.color().is_some());
         assert!(TestStatus::Failure.color().is_some());
         assert!(TestStatus::Clear.color().is_none());

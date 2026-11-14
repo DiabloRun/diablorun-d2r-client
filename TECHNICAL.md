@@ -105,12 +105,12 @@ WebSocket path) opens on startup and from the tray menu. It follows the Windows
 light/dark app theme, has its own taskbar entry, and is brought to the
 foreground when opened.
 Connection changes are saved automatically: the LiveSplit connection is
-re-established without restarting the app. **Close to tray** dismisses the
+re-established without restarting the app. **Minimize to tray** dismisses the
 settings window. Test connection uses the values currently in the dialog and a
-1.5-second timeout, and shows a small green check or red cross next to the
-result. The same dialog shows live status rows for the LiveSplit connection and
-D2R capture, including the captured resolution. The tray icon tooltip is just
-the app title, **D2R LRT Tracker**.
+1.5-second timeout, and shows a status icon next to the result. The same dialog
+shows live status rows for the LiveSplit connection and D2R capture, including
+the captured resolution. The tray icon tooltip is just the app title,
+**D2R LRT Tracker**.
 
 ## Configuration
 

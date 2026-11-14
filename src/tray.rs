@@ -18,7 +18,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub const TRAY_CALLBACK_MESSAGE: u32 = 0x0400 + 1;
 
 pub const MENU_SETTINGS: usize = 102;
-pub const MENU_RECONNECT: usize = 103;
 pub const MENU_QUIT: usize = 105;
 
 const TRAY_TITLE: &str = "D2R LRT Tracker";
@@ -106,8 +105,6 @@ impl TrayIcon {
                 Err(_) => return 0,
             };
 
-            let _ = AppendMenuW(menu, MF_STRING, MENU_RECONNECT, w!("Reconnect LiveSplit"));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Settings..."));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit"));

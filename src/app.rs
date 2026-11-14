@@ -248,9 +248,6 @@ impl App {
         let command = tray.show_menu();
         match command {
             tray::MENU_SETTINGS => self.open_settings(),
-            tray::MENU_RECONNECT => {
-                self.shared.request_reconnect();
-            }
             tray::MENU_QUIT => unsafe {
                 let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             },

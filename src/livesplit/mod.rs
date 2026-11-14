@@ -183,7 +183,6 @@ fn mark_disconnected(shared: &SharedState, controller: &mut Controller, next_ret
 pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
     let initial = shared.snapshot();
     let mut controller = Controller::new(initial.settings.livesplit.clone());
-    let mut last_reconnect_generation = initial.reconnect_generation;
     let mut next_retry = Instant::now();
     let mut next_poll = Instant::now();
 
@@ -192,14 +191,6 @@ pub fn run(shared: Arc<SharedState>, connector: Arc<Connector>) {
         if snapshot.shutdown {
             controller.shutdown();
             return;
-        }
-
-        if snapshot.reconnect_generation != last_reconnect_generation {
-            last_reconnect_generation = snapshot.reconnect_generation;
-            controller.disconnect();
-            shared.drain_pause_transitions();
-            next_retry = Instant::now();
-            next_poll = Instant::now();
         }
 
         if snapshot.settings.livesplit != *controller.settings() {
